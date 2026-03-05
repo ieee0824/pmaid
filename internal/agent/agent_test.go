@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	memai "github.com/ieee0824/memAI-go"
@@ -318,6 +319,142 @@ func TestAgent_PlanReject(t *testing.T) {
 	}
 	if ag.CurrentPlan() != "" {
 		t.Error("CurrentPlan should be empty after rejection")
+	}
+}
+
+func TestAgent_ContextCompression(t *testing.T) {
+	store := newMockStore()
+
+	// Create a mock that returns tool calls for many iterations, then a final response
+	responses := make([]*llm.Response, 0)
+	for i := 0; i < 15; i++ {
+		responses = append(responses, &llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{
+					{ID: fmt.Sprintf("call-%d", i), Name: "read_file", Arguments: fmt.Sprintf(`{"path":"file%d.txt"}`, i)},
+				},
+			},
+		})
+	}
+	responses = append(responses, &llm.Response{
+		Message: llm.Message{Role: llm.RoleAssistant, Content: "Done reading all files"},
+	})
+
+	mock := &mockLLMClient{responses: responses}
+
+	// Create a tool that returns large results
+	bigTool := &fakeTool{name: "read_file", result: strings.Repeat("x", 5000)}
+
+	ag := New(Config{
+		LLMClient:         mock,
+		STM:               memai.NewSTM(memai.STMConfig{}),
+		LTM:               memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+		Store:             store,
+		Tools:             tools.NewRegistry(bigTool),
+		Embedder:          dummyEmbedder,
+		ContextDir:        "/tmp",
+		MaxToolIterations: 50,
+		MaxContextChars:   20000, // Low threshold to trigger compression
+	})
+
+	result, err := ag.Run(context.Background(), "read all files")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result != "Done reading all files" {
+		t.Errorf("result = %q", result)
+	}
+
+	// Verify compression happened: later LLM calls should have compressed tool results
+	if mock.callCount < 10 {
+		t.Errorf("expected many LLM calls, got %d", mock.callCount)
+	}
+
+	// Check that some tool results in earlier calls were compressed
+	lastMsgs := mock.messages[mock.callCount-1]
+	compressedCount := 0
+	for _, m := range lastMsgs {
+		if m.Role == llm.RoleTool && strings.Contains(m.Content, "[Compressed:") {
+			compressedCount++
+		}
+	}
+	if compressedCount == 0 {
+		t.Error("expected some tool results to be compressed")
+	}
+}
+
+func TestAgent_WrapUpHint(t *testing.T) {
+	store := newMockStore()
+
+	maxIter := 5
+	responses := make([]*llm.Response, 0)
+	for i := 0; i < maxIter; i++ {
+		responses = append(responses, &llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{
+					{ID: fmt.Sprintf("call-%d", i), Name: "read_file", Arguments: `{"path":"test.txt"}`},
+				},
+			},
+		})
+	}
+	// Final response after exhausting iterations shouldn't happen since we exhaust the loop
+	// But add one just in case
+	responses = append(responses, &llm.Response{
+		Message: llm.Message{Role: llm.RoleAssistant, Content: "wrapping up"},
+	})
+
+	mock := &mockLLMClient{responses: responses}
+	smallTool := &fakeTool{name: "read_file", result: "content"}
+
+	ag := New(Config{
+		LLMClient:         mock,
+		STM:               memai.NewSTM(memai.STMConfig{}),
+		LTM:               memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+		Store:             store,
+		Tools:             tools.NewRegistry(smallTool),
+		Embedder:          dummyEmbedder,
+		ContextDir:        "/tmp",
+		MaxToolIterations: maxIter,
+	})
+
+	ag.Run(context.Background(), "do work")
+
+	// Check that a system hint was injected near the end
+	foundHint := false
+	for _, callMsgs := range mock.messages {
+		for _, m := range callMsgs {
+			if m.Role == llm.RoleSystem && strings.Contains(m.Content, "remaining") {
+				foundHint = true
+			}
+		}
+	}
+	if !foundHint {
+		t.Error("expected wrap-up hint to be injected before iteration limit")
+	}
+}
+
+// fakeTool implements tools.Tool for testing
+type fakeTool struct {
+	name   string
+	result string
+}
+
+func (f *fakeTool) Name() string                                 { return f.name }
+func (f *fakeTool) Description() string                          { return "fake tool" }
+func (f *fakeTool) Parameters() map[string]interface{}            { return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}} }
+func (f *fakeTool) Execute(_ interface{}, _ string) (string, error) { return f.result, nil }
+
+func TestMessagesCharCount(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "hello"},
+		{Role: llm.RoleAssistant, Content: "world", ToolCalls: []llm.ToolCall{{Arguments: "abc"}}},
+	}
+	got := messagesCharCount(msgs)
+	want := 5 + 5 + 3 // "hello" + "world" + "abc"
+	if got != want {
+		t.Errorf("messagesCharCount = %d, want %d", got, want)
 	}
 }
 

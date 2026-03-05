@@ -17,6 +17,7 @@ type Config struct {
 	Memory MemoryConfig `toml:"memory"`
 	STM    STMConfig    `toml:"stm"`
 	LTM    LTMConfig    `toml:"ltm"`
+	Agent  AgentConfig  `toml:"agent"`
 }
 
 type LLMConfig struct {
@@ -45,6 +46,11 @@ type LTMConfig struct {
 	EmotionalBoost      float64 `toml:"emotional_boost"`
 }
 
+type AgentConfig struct {
+	MaxToolIterations int `toml:"max_tool_iterations"`
+	MaxContextChars   int `toml:"max_context_chars"`
+}
+
 func DefaultConfig() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
@@ -71,6 +77,10 @@ func DefaultConfig() Config {
 			ThreadBoost:         0.1,
 			DateBoost:           0.15,
 			EmotionalBoost:      0.12,
+		},
+		Agent: AgentConfig{
+			MaxToolIterations: 50,
+			MaxContextChars:   100000,
 		},
 	}
 }

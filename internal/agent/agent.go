@@ -14,7 +14,11 @@ import (
 	"github.com/ieee0824/pmaid/internal/tools"
 )
 
-const maxToolIterations = 10
+const (
+	defaultMaxToolIterations = 50
+	defaultMaxContextChars   = 100000
+	warnIterationsLeft       = 3
+)
 
 // StatusFunc is called to report status changes during processing.
 type StatusFunc func(msg string)
@@ -35,10 +39,12 @@ type Agent struct {
 	threadKey  string
 	turn       int
 	history    []llm.Message
-	onStatus      StatusFunc
-	onConfirm     ConfirmFunc
-	skillsContext string
-	log           *logger.Logger
+	onStatus          StatusFunc
+	onConfirm         ConfirmFunc
+	skillsContext     string
+	log               *logger.Logger
+	maxToolIterations int
+	maxContextChars   int
 }
 
 type EmbedFunc func(ctx context.Context, text string) ([]float64, error)
@@ -57,10 +63,12 @@ type Config struct {
 	PlanHolder *tools.PlanHolder
 	Embedder   EmbedFunc
 	ContextDir string
-	OnStatus      StatusFunc
-	OnConfirm     ConfirmFunc
-	SkillsContext string
-	Logger        *logger.Logger
+	OnStatus          StatusFunc
+	OnConfirm         ConfirmFunc
+	SkillsContext     string
+	Logger            *logger.Logger
+	MaxToolIterations int
+	MaxContextChars   int
 }
 
 func New(cfg Config) *Agent {
@@ -68,21 +76,31 @@ func New(cfg Config) *Agent {
 	if log == nil {
 		log = logger.NewNop()
 	}
+	maxIter := cfg.MaxToolIterations
+	if maxIter <= 0 {
+		maxIter = defaultMaxToolIterations
+	}
+	maxCtx := cfg.MaxContextChars
+	if maxCtx <= 0 {
+		maxCtx = defaultMaxContextChars
+	}
 	return &Agent{
-		llmClient:     cfg.LLMClient,
-		stm:           cfg.STM,
-		ltm:           cfg.LTM,
-		store:         cfg.Store,
-		toolReg:       cfg.Tools,
-		planHolder:    cfg.PlanHolder,
-		embedder:      cfg.Embedder,
-		contextDir:    cfg.ContextDir,
-		threadKey:     uuid.New().String(),
-		history:       []llm.Message{},
-		onStatus:      cfg.OnStatus,
-		onConfirm:     cfg.OnConfirm,
-		skillsContext: cfg.SkillsContext,
-		log:           log,
+		llmClient:         cfg.LLMClient,
+		stm:               cfg.STM,
+		ltm:               cfg.LTM,
+		store:             cfg.Store,
+		toolReg:           cfg.Tools,
+		planHolder:        cfg.PlanHolder,
+		embedder:          cfg.Embedder,
+		contextDir:        cfg.ContextDir,
+		threadKey:         uuid.New().String(),
+		history:           []llm.Message{},
+		onStatus:          cfg.OnStatus,
+		onConfirm:         cfg.OnConfirm,
+		skillsContext:     cfg.SkillsContext,
+		log:               log,
+		maxToolIterations: maxIter,
+		maxContextChars:   maxCtx,
 	}
 }
 
@@ -197,8 +215,21 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	toolDefs := a.toolReg.Definitions()
 	var finalResponse string
 
-	for i := 0; i < maxToolIterations; i++ {
-		a.log.Debug("LLM call: iteration=%d messages=%d", i, len(messages))
+	for i := 0; i < a.maxToolIterations; i++ {
+		// Compress context if messages are too large
+		messages = a.compressMessages(messages)
+
+		// Warn LLM when approaching iteration limit
+		remaining := a.maxToolIterations - i
+		if remaining == warnIterationsLeft {
+			a.log.Info("Injecting wrap-up hint: %d iterations remaining", remaining)
+			messages = append(messages, llm.Message{
+				Role:    llm.RoleSystem,
+				Content: fmt.Sprintf("IMPORTANT: You have only %d tool calls remaining. Wrap up your current work and provide a final response. Summarize what you've done so far.", remaining),
+			})
+		}
+
+		a.log.Debug("LLM call: iteration=%d messages=%d context_chars=%d", i, len(messages), messagesCharCount(messages))
 		a.reportStatus("考え中...")
 		resp, err := a.llmClient.Chat(ctx, messages, toolDefs)
 		if err != nil {
@@ -282,7 +313,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 	// Loop exhausted without a final text response
 	if finalResponse == "" {
-		a.log.Warn("Tool loop exhausted after %d iterations without final response", maxToolIterations)
+		a.log.Warn("Tool loop exhausted after %d iterations without final response", a.maxToolIterations)
 		finalResponse = "（ツール呼び出しが上限に達しました。処理を中断します。続きが必要であれば再度指示してください。）"
 	}
 
@@ -415,6 +446,52 @@ func toolStatusMessage(name, args string) string {
 	default:
 		return fmt.Sprintf("ツール実行中: %s", name)
 	}
+}
+
+// messagesCharCount returns the total character count of all message contents.
+func messagesCharCount(messages []llm.Message) int {
+	total := 0
+	for _, m := range messages {
+		total += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			total += len(tc.Arguments)
+		}
+	}
+	return total
+}
+
+// compressMessages shrinks the message list when it exceeds maxContextChars.
+// Strategy: replace old tool result contents with a short summary, keeping
+// the system prompt (index 0) and the most recent messages intact.
+func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
+	total := messagesCharCount(messages)
+	if total <= a.maxContextChars {
+		return messages
+	}
+
+	a.log.Info("Context compression: %d chars exceeds %d limit, compressing old tool results", total, a.maxContextChars)
+
+	// Keep first message (system) and last 10 messages intact
+	keepTail := 10
+	if keepTail >= len(messages) {
+		return messages
+	}
+
+	for i := 1; i < len(messages)-keepTail; i++ {
+		m := &messages[i]
+		if m.Role == llm.RoleTool && len(m.Content) > 200 {
+			original := len(m.Content)
+			m.Content = fmt.Sprintf("[Compressed: tool result was %d chars]", original)
+		}
+		// Also compress large assistant content (but keep tool call metadata)
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) == 0 && len(m.Content) > 500 {
+			m.Content = truncate(m.Content, 200) + fmt.Sprintf(" [truncated from %d chars]", len(m.Content))
+		}
+	}
+
+	newTotal := messagesCharCount(messages)
+	a.log.Info("Context compression done: %d -> %d chars", total, newTotal)
+	return messages
 }
 
 func buildSystemPrompt(contextDir, memoryContext, planContext, skillsContext string) string {

@@ -140,16 +140,18 @@ func main() {
 
 	// Agent
 	ag := agent.New(agent.Config{
-		LLMClient:     llmClient,
-		STM:           stm,
-		LTM:           ltm,
-		Store:         store,
-		Tools:         toolRegistry,
-		PlanHolder:    planHolder,
-		Embedder:      embedder.EmbedFunc(),
-		ContextDir:    absContext,
-		SkillsContext: skillsCtx,
-		Logger:        log,
+		LLMClient:         llmClient,
+		STM:               stm,
+		LTM:               ltm,
+		Store:             store,
+		Tools:             toolRegistry,
+		PlanHolder:        planHolder,
+		Embedder:          embedder.EmbedFunc(),
+		ContextDir:        absContext,
+		SkillsContext:     skillsCtx,
+		Logger:            log,
+		MaxToolIterations: cfg.Agent.MaxToolIterations,
+		MaxContextChars:   cfg.Agent.MaxContextChars,
 	})
 
 	// Spinner manager for pausing/resuming during confirmation
