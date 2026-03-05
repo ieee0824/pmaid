@@ -14,11 +14,12 @@ type Config struct {
 	ContextDir string `toml:"context_dir"`
 	MemoryPath string `toml:"memory_path"`
 
-	LLM    LLMConfig    `toml:"llm"`
-	Memory MemoryConfig `toml:"memory"`
-	STM    STMConfig    `toml:"stm"`
-	LTM    LTMConfig    `toml:"ltm"`
-	Agent  AgentConfig  `toml:"agent"`
+	LLM      LLMConfig    `toml:"llm"`
+	LightLLM LLMConfig    `toml:"light_llm"`
+	Memory   MemoryConfig `toml:"memory"`
+	STM      STMConfig    `toml:"stm"`
+	LTM      LTMConfig    `toml:"ltm"`
+	Agent    AgentConfig  `toml:"agent"`
 }
 
 type LLMConfig struct {
@@ -122,15 +123,31 @@ func Load(path string) (Config, error) {
 
 // ResolveAPIKey returns the API key from config, falling back to env var.
 func (c *Config) ResolveAPIKey() string {
-	if c.LLM.APIKey != "" {
-		return c.LLM.APIKey
+	return resolveAPIKey(c.LLM)
+}
+
+// ResolveLightAPIKey returns the API key for the light LLM.
+func (c *Config) ResolveLightAPIKey() string {
+	return resolveAPIKey(c.LightLLM)
+}
+
+func resolveAPIKey(cfg LLMConfig) string {
+	if cfg.APIKey != "" {
+		return cfg.APIKey
 	}
-	switch c.LLM.Provider {
+	switch cfg.Provider {
+	case "google":
+		return os.Getenv("GEMINI_API_KEY")
 	case "openai":
 		return os.Getenv("OPENAI_API_KEY")
 	default:
 		return os.Getenv("OPENAI_API_KEY")
 	}
+}
+
+// HasLightLLM returns true if a light LLM is configured.
+func (c *Config) HasLightLLM() bool {
+	return c.LightLLM.Model != ""
 }
 
 // ResolveMemoryPath returns the memory path from config, falling back to env var.

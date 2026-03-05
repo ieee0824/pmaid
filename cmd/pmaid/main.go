@@ -12,6 +12,8 @@ import (
 	memai "github.com/ieee0824/memAI-go"
 	"github.com/ieee0824/pmaid/internal/agent"
 	"github.com/ieee0824/pmaid/internal/config"
+	"github.com/ieee0824/pmaid/internal/llm"
+	googlm "github.com/ieee0824/pmaid/internal/llm/google"
 	oaillm "github.com/ieee0824/pmaid/internal/llm/openai"
 	"github.com/ieee0824/pmaid/internal/logger"
 	"github.com/ieee0824/pmaid/internal/memory"
@@ -121,6 +123,18 @@ func main() {
 	apiKey := cfg.ResolveAPIKey()
 	llmClient := oaillm.New(cfg.LLM.Model, apiKey)
 
+	// Light LLM client (optional, for context compression etc.)
+	var lightClient llm.Client
+	if cfg.HasLightLLM() {
+		lightKey := cfg.ResolveLightAPIKey()
+		switch cfg.LightLLM.Provider {
+		case "google":
+			lightClient = googlm.New(cfg.LightLLM.Model, lightKey)
+		default:
+			lightClient = oaillm.New(cfg.LightLLM.Model, lightKey)
+		}
+	}
+
 	// Plan holder (shared between tools and agent)
 	planHolder := &tools.PlanHolder{}
 
@@ -141,6 +155,7 @@ func main() {
 	// Agent
 	ag := agent.New(agent.Config{
 		LLMClient:         llmClient,
+		LightClient:       lightClient,
 		STM:               stm,
 		LTM:               ltm,
 		Store:             store,

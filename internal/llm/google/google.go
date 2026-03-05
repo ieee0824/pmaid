@@ -1,4 +1,4 @@
-package openai
+package google
 
 import (
 	"context"
@@ -15,18 +15,23 @@ import (
 )
 
 const (
+	baseURL       = "https://generativelanguage.googleapis.com/v1beta/openai/"
 	maxRetries    = 5
 	baseDelay     = 1 * time.Second
 	maxDelay      = 30 * time.Second
 )
 
+// Client implements llm.Client using Google's Gemini API (OpenAI-compatible endpoint).
+// Supports Gemma models (e.g. gemma-3-4b-it) and Gemini models.
 type Client struct {
 	client oai.Client
 	model  oai.ChatModel
 }
 
 func New(model string, apiKey string) *Client {
-	var opts []option.RequestOption
+	opts := []option.RequestOption{
+		option.WithBaseURL(baseURL),
+	}
 	if apiKey != "" {
 		opts = append(opts, option.WithAPIKey(apiKey))
 	}
@@ -53,7 +58,7 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, tools []llm.T
 			break
 		}
 		if !isRetryable(lastErr) {
-			return nil, fmt.Errorf("openai chat: %w", lastErr)
+			return nil, fmt.Errorf("google chat: %w", lastErr)
 		}
 		delay := time.Duration(math.Min(
 			float64(baseDelay)*math.Pow(2, float64(attempt)),
@@ -66,11 +71,11 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, tools []llm.T
 		}
 	}
 	if lastErr != nil {
-		return nil, fmt.Errorf("openai chat (after %d retries): %w", maxRetries, lastErr)
+		return nil, fmt.Errorf("google chat (after %d retries): %w", maxRetries, lastErr)
 	}
 
 	if len(completion.Choices) == 0 {
-		return nil, fmt.Errorf("openai: no choices returned")
+		return nil, fmt.Errorf("google: no choices returned")
 	}
 
 	choice := completion.Choices[0]

@@ -28,17 +28,18 @@ type StatusFunc func(msg string)
 type ConfirmFunc func(description string) bool
 
 type Agent struct {
-	llmClient  llm.Client
-	stm        *memai.STM
-	ltm        *memai.LTM[string]
-	store      MemoryStoreWithBoost
-	toolReg    *tools.Registry
-	planHolder *tools.PlanHolder
-	embedder   EmbedFunc
-	contextDir string
-	threadKey  string
-	turn       int
-	history    []llm.Message
+	llmClient   llm.Client
+	lightClient llm.Client // optional: lightweight model for auxiliary tasks (compression, etc.)
+	stm         *memai.STM
+	ltm         *memai.LTM[string]
+	store       MemoryStoreWithBoost
+	toolReg     *tools.Registry
+	planHolder  *tools.PlanHolder
+	embedder    EmbedFunc
+	contextDir  string
+	threadKey   string
+	turn        int
+	history     []llm.Message
 	onStatus          StatusFunc
 	onConfirm         ConfirmFunc
 	name              string
@@ -56,14 +57,15 @@ type MemoryStoreWithBoost interface {
 }
 
 type Config struct {
-	LLMClient  llm.Client
-	STM        *memai.STM
-	LTM        *memai.LTM[string]
-	Store      MemoryStoreWithBoost
-	Tools      *tools.Registry
-	PlanHolder *tools.PlanHolder
-	Embedder   EmbedFunc
-	ContextDir string
+	LLMClient   llm.Client
+	LightClient llm.Client // optional: lightweight model for compression summaries
+	STM         *memai.STM
+	LTM         *memai.LTM[string]
+	Store       MemoryStoreWithBoost
+	Tools       *tools.Registry
+	PlanHolder  *tools.PlanHolder
+	Embedder    EmbedFunc
+	ContextDir  string
 	OnStatus          StatusFunc
 	OnConfirm         ConfirmFunc
 	Name              string
@@ -92,6 +94,7 @@ func New(cfg Config) *Agent {
 	}
 	return &Agent{
 		llmClient:         cfg.LLMClient,
+		lightClient:       cfg.LightClient,
 		stm:               cfg.STM,
 		ltm:               cfg.LTM,
 		store:             cfg.Store,
@@ -473,15 +476,15 @@ func messagesCharCount(messages []llm.Message) int {
 }
 
 // compressMessages shrinks the message list when it exceeds maxContextChars.
-// Strategy: replace old tool result contents with a short summary, keeping
-// the system prompt (index 0) and the most recent messages intact.
+// If a light LLM client is available, it generates summaries of old messages.
+// Otherwise, it falls back to simple truncation.
 func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 	total := messagesCharCount(messages)
 	if total <= a.maxContextChars {
 		return messages
 	}
 
-	a.log.Info("Context compression: %d chars exceeds %d limit, compressing old tool results", total, a.maxContextChars)
+	a.log.Info("Context compression: %d chars exceeds %d limit, compressing old messages", total, a.maxContextChars)
 
 	// Keep first message (system) and last 10 messages intact
 	keepTail := 10
@@ -489,21 +492,73 @@ func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 		return messages
 	}
 
+	if a.lightClient != nil {
+		a.compressWithLLM(messages, keepTail)
+	} else {
+		a.compressByTruncation(messages, keepTail)
+	}
+
+	newTotal := messagesCharCount(messages)
+	a.log.Info("Context compression done: %d -> %d chars", total, newTotal)
+	return messages
+}
+
+// compressByTruncation replaces old messages with simple placeholders.
+func (a *Agent) compressByTruncation(messages []llm.Message, keepTail int) {
 	for i := 1; i < len(messages)-keepTail; i++ {
 		m := &messages[i]
 		if m.Role == llm.RoleTool && len(m.Content) > 200 {
 			original := len(m.Content)
 			m.Content = fmt.Sprintf("[Compressed: tool result was %d chars]", original)
 		}
-		// Also compress large assistant content (but keep tool call metadata)
 		if m.Role == llm.RoleAssistant && len(m.ToolCalls) == 0 && len(m.Content) > 500 {
 			m.Content = truncate(m.Content, 200) + fmt.Sprintf(" [truncated from %d chars]", len(m.Content))
 		}
 	}
+}
 
-	newTotal := messagesCharCount(messages)
-	a.log.Info("Context compression done: %d -> %d chars", total, newTotal)
-	return messages
+// compressWithLLM uses the light model to summarize old tool results and assistant messages.
+func (a *Agent) compressWithLLM(messages []llm.Message, keepTail int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for i := 1; i < len(messages)-keepTail; i++ {
+		m := &messages[i]
+		if m.Role == llm.RoleTool && len(m.Content) > 200 {
+			summary := a.summarize(ctx, m.Content)
+			if summary != "" {
+				m.Content = summary
+			} else {
+				original := len(m.Content)
+				m.Content = fmt.Sprintf("[Compressed: tool result was %d chars]", original)
+			}
+		}
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) == 0 && len(m.Content) > 500 {
+			summary := a.summarize(ctx, m.Content)
+			if summary != "" {
+				m.Content = summary
+			} else {
+				m.Content = truncate(m.Content, 200) + fmt.Sprintf(" [truncated from %d chars]", len(m.Content))
+			}
+		}
+	}
+}
+
+// summarize uses the light LLM to generate a concise summary of content.
+func (a *Agent) summarize(ctx context.Context, content string) string {
+	if a.lightClient == nil {
+		return ""
+	}
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "You are a summarizer. Summarize the following content in 1-2 sentences. Keep key information like file paths, function names, and error messages. Respond with only the summary, no preamble."},
+		{Role: llm.RoleUser, Content: content},
+	}
+	resp, err := a.lightClient.Chat(ctx, msgs, nil)
+	if err != nil {
+		a.log.Warn("Light LLM summarize failed: %v", err)
+		return ""
+	}
+	return "[Summary] " + resp.Message.Content
 }
 
 func buildSystemPrompt(name, contextDir, memoryContext, planContext, skillsContext string) string {
