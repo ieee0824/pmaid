@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ieee0824/pmaid/internal/llm"
@@ -108,6 +109,9 @@ func (c *Client) Chat(ctx context.Context, messages []llm.Message, tools []llm.T
 func isRetryable(err error) bool {
 	var apiErr *oai.Error
 	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == http.StatusTooManyRequests && isQuotaExceeded(apiErr) {
+			return false
+		}
 		switch apiErr.StatusCode {
 		case http.StatusTooManyRequests, http.StatusInternalServerError,
 			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
@@ -115,6 +119,11 @@ func isRetryable(err error) bool {
 		}
 	}
 	return false
+}
+
+func isQuotaExceeded(apiErr *oai.Error) bool {
+	msg := strings.ToLower(apiErr.Error())
+	return strings.Contains(msg, "insufficient_quota") || strings.Contains(msg, "exceeded your current quota")
 }
 
 func convertMessages(messages []llm.Message) []oai.ChatCompletionMessageParamUnion {
