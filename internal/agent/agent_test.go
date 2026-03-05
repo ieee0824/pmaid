@@ -375,7 +375,7 @@ func TestAgent_ContextCompression(t *testing.T) {
 	lastMsgs := mock.messages[mock.callCount-1]
 	compressedCount := 0
 	for _, m := range lastMsgs {
-		if m.Role == llm.RoleTool && strings.Contains(m.Content, "[Compressed:") {
+		if m.Role == llm.RoleTool && (strings.Contains(m.Content, "[TextRank Summary]") || strings.Contains(m.Content, "[Summary]")) {
 			compressedCount++
 		}
 	}
