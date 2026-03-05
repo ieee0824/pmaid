@@ -11,6 +11,7 @@ import (
 	memai "github.com/ieee0824/memAI-go"
 	"github.com/ieee0824/pmaid/internal/llm"
 	"github.com/ieee0824/pmaid/internal/logger"
+	"github.com/ieee0824/pmaid/internal/nlp"
 	"github.com/ieee0824/pmaid/internal/tools"
 )
 
@@ -495,7 +496,7 @@ func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 	if a.lightClient != nil {
 		a.compressWithLLM(messages, keepTail)
 	} else {
-		a.compressByTruncation(messages, keepTail)
+		a.compressByTextRank(messages, keepTail)
 	}
 
 	newTotal := messagesCharCount(messages)
@@ -503,16 +504,17 @@ func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 	return messages
 }
 
-// compressByTruncation replaces old messages with simple placeholders.
-func (a *Agent) compressByTruncation(messages []llm.Message, keepTail int) {
+// compressByTextRank uses TextRank extractive summarization to compress old messages.
+func (a *Agent) compressByTextRank(messages []llm.Message, keepTail int) {
 	for i := 1; i < len(messages)-keepTail; i++ {
 		m := &messages[i]
 		if m.Role == llm.RoleTool && len(m.Content) > 200 {
-			original := len(m.Content)
-			m.Content = fmt.Sprintf("[Compressed: tool result was %d chars]", original)
+			summary := nlp.ExtractSummary(m.Content, 3)
+			m.Content = "[TextRank Summary] " + summary
 		}
 		if m.Role == llm.RoleAssistant && len(m.ToolCalls) == 0 && len(m.Content) > 500 {
-			m.Content = truncate(m.Content, 200) + fmt.Sprintf(" [truncated from %d chars]", len(m.Content))
+			summary := nlp.ExtractSummary(m.Content, 3)
+			m.Content = "[TextRank Summary] " + summary
 		}
 	}
 }
