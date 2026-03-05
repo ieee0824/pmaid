@@ -28,10 +28,24 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = config.DefaultConfigPath()
 	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+
+	var cfg config.Config
+	if !config.Exists(cfgPath) {
+		fmt.Printf("設定ファイルが見つかりません: %s\n\n", cfgPath)
+		var setupErr error
+		cfg, setupErr = config.InteractiveSetup(cfgPath, os.Stdin, os.Stdout)
+		if setupErr != nil {
+			fmt.Fprintf(os.Stderr, "Error during setup: %v\n", setupErr)
+			os.Exit(1)
+		}
+		fmt.Println()
+	} else {
+		var loadErr error
+		cfg, loadErr = config.Load(cfgPath)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", loadErr)
+			os.Exit(1)
+		}
 	}
 
 	// CLI flags override config
