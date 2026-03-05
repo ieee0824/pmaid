@@ -1,6 +1,6 @@
 # Binary
-pmaid
-cmd/pmaid/pmaid
+/pmaid
+/cmd/pmaid/pmaid
 /bin/
 
 # IDE

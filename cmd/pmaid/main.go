@@ -14,6 +14,7 @@ import (
 	"github.com/ieee0824/pmaid/internal/config"
 	oaillm "github.com/ieee0824/pmaid/internal/llm/openai"
 	"github.com/ieee0824/pmaid/internal/memory"
+	"github.com/ieee0824/pmaid/internal/spinner"
 	"github.com/ieee0824/pmaid/internal/tools"
 )
 
@@ -132,7 +133,10 @@ func main() {
 	ctx := context.Background()
 
 	if *query != "" {
+		sp := spinner.New(os.Stderr, "考え中...")
+		sp.Start()
 		result, err := ag.Run(ctx, *query)
+		sp.Stop()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -159,7 +163,10 @@ func main() {
 			continue
 		}
 
+		sp := spinner.New(os.Stderr, "考え中...")
+		sp.Start()
 		result, err := ag.Run(ctx, input)
+		sp.Stop()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			continue
@@ -189,7 +196,10 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 		case "y", "yes", "はい":
 			ag.ApprovePlan()
 			fmt.Print("\nプランを承認しました。実行を開始します。\n\n")
+			sp := spinner.New(os.Stderr, "実行中...")
+			sp.Start()
 			result, err := ag.Run(ctx, "Plan approved. Please execute the plan step by step.")
+			sp.Stop()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return
@@ -209,7 +219,10 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 			}
 			feedback := scanner.Text()
 			ag.RejectPlan()
+			sp := spinner.New(os.Stderr, "修正中...")
+			sp.Start()
 			result, err := ag.Run(ctx, fmt.Sprintf("The previous plan was rejected. Please revise it with this feedback: %s", feedback))
+			sp.Stop()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return
