@@ -31,6 +31,35 @@ func TestRegistry(t *testing.T) {
 		}
 	})
 
+	t.Run("Fuzzy match typo", func(t *testing.T) {
+		tests := []struct {
+			input string
+			want  string
+		}{
+			{"read_flie", "read_file"},
+			{"writ_file", "write_file"},
+			{"execute_comand", "execute_command"},
+			{"raed_file", "read_file"},
+		}
+		for _, tt := range tests {
+			tool, ok := reg.Get(tt.input)
+			if !ok {
+				t.Errorf("Get(%q) not found, want %q", tt.input, tt.want)
+				continue
+			}
+			if tool.Name() != tt.want {
+				t.Errorf("Get(%q) = %q, want %q", tt.input, tool.Name(), tt.want)
+			}
+		}
+	})
+
+	t.Run("Fuzzy no match for distant names", func(t *testing.T) {
+		_, ok := reg.Get("totally_different")
+		if ok {
+			t.Error("expected not found for very different name")
+		}
+	})
+
 	t.Run("Definitions", func(t *testing.T) {
 		defs := reg.Definitions()
 		if len(defs) != 3 {

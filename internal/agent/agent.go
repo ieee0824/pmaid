@@ -196,6 +196,14 @@ You help users with software engineering tasks including writing code, debugging
 - When asked to read files, use the read_file tool
 - When asked to run commands, use the execute_command tool
 - Always explain what you're doing before using tools
+
+## Typo Handling
+- User input may contain typos, misspellings, or grammatical errors in both Japanese and English
+- Automatically interpret the user's intent despite any typos and proceed with the corrected interpretation
+- Do NOT ask for clarification on obvious typos — silently correct and execute
+- For file paths or code identifiers with typos, infer the correct name from context (e.g. existing files, common patterns)
+- If a correction significantly changes the meaning, briefly mention what you interpreted (e.g. "「〇〇」として処理します")
+- Examples: "ふぁいるよんで" → read file, "comit" → commit, "tset" → test
 `)
 
 	if contextDir != "" {

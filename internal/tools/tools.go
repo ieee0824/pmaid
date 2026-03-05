@@ -23,9 +23,74 @@ func NewRegistry(tt ...Tool) *Registry {
 	return r
 }
 
+// Get returns a tool by exact name, or falls back to fuzzy matching
+// if no exact match is found.
 func (r *Registry) Get(name string) (Tool, bool) {
-	t, ok := r.tools[name]
-	return t, ok
+	if t, ok := r.tools[name]; ok {
+		return t, true
+	}
+	return r.fuzzyGet(name)
+}
+
+func (r *Registry) fuzzyGet(name string) (Tool, bool) {
+	var bestTool Tool
+	bestDist := -1
+	for registered, t := range r.tools {
+		d := editDistance(name, registered)
+		maxLen := len(name)
+		if len(registered) > maxLen {
+			maxLen = len(registered)
+		}
+		threshold := maxLen / 3
+		if threshold < 2 {
+			threshold = 2
+		}
+		if d <= threshold && (bestDist < 0 || d < bestDist) {
+			bestDist = d
+			bestTool = t
+		}
+	}
+	if bestTool != nil {
+		return bestTool, true
+	}
+	return nil, false
+}
+
+func editDistance(a, b string) int {
+	la, lb := len(a), len(b)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+	prev := make([]int, lb+1)
+	curr := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		curr[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			del := prev[j] + 1
+			ins := curr[j-1] + 1
+			sub := prev[j-1] + cost
+			v := del
+			if ins < v {
+				v = ins
+			}
+			if sub < v {
+				v = sub
+			}
+			curr[j] = v
+		}
+		prev, curr = curr, prev
+	}
+	return prev[lb]
 }
 
 func (r *Registry) Definitions() []llm.ToolDef {
