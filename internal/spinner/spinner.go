@@ -11,10 +11,11 @@ var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "�
 
 // Spinner displays an animated spinner while work is in progress.
 type Spinner struct {
-	w      io.Writer
-	msg    string
-	done   chan struct{}
-	wg     sync.WaitGroup
+	w    io.Writer
+	mu   sync.Mutex
+	msg  string
+	done chan struct{}
+	wg   sync.WaitGroup
 }
 
 // New creates a new Spinner that writes to w.
@@ -24,6 +25,13 @@ func New(w io.Writer, msg string) *Spinner {
 		msg:  msg,
 		done: make(chan struct{}),
 	}
+}
+
+// SetMessage updates the spinner message while it's running.
+func (s *Spinner) SetMessage(msg string) {
+	s.mu.Lock()
+	s.msg = msg
+	s.mu.Unlock()
 }
 
 // Start begins the spinner animation in a goroutine.
@@ -37,11 +45,13 @@ func (s *Spinner) Start() {
 		for {
 			select {
 			case <-s.done:
-				// Clear the spinner line
 				fmt.Fprintf(s.w, "\r\033[K")
 				return
 			case <-ticker.C:
-				fmt.Fprintf(s.w, "\r%s %s", frames[i%len(frames)], s.msg)
+				s.mu.Lock()
+				msg := s.msg
+				s.mu.Unlock()
+				fmt.Fprintf(s.w, "\r\033[K%s %s", frames[i%len(frames)], msg)
 				i++
 			}
 		}

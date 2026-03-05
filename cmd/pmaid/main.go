@@ -134,6 +134,7 @@ func main() {
 
 	if *query != "" {
 		sp := spinner.New(os.Stderr, "考え中...")
+		ag.SetOnStatus(sp.SetMessage)
 		sp.Start()
 		result, err := ag.Run(ctx, *query)
 		sp.Stop()
@@ -164,6 +165,7 @@ func main() {
 		}
 
 		sp := spinner.New(os.Stderr, "考え中...")
+		ag.SetOnStatus(sp.SetMessage)
 		sp.Start()
 		result, err := ag.Run(ctx, input)
 		sp.Stop()
@@ -197,6 +199,7 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 			ag.ApprovePlan()
 			fmt.Print("\nプランを承認しました。実行を開始します。\n\n")
 			sp := spinner.New(os.Stderr, "実行中...")
+			ag.SetOnStatus(sp.SetMessage)
 			sp.Start()
 			result, err := ag.Run(ctx, "Plan approved. Please execute the plan step by step.")
 			sp.Stop()
@@ -220,6 +223,7 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 			feedback := scanner.Text()
 			ag.RejectPlan()
 			sp := spinner.New(os.Stderr, "修正中...")
+			ag.SetOnStatus(sp.SetMessage)
 			sp.Start()
 			result, err := ag.Run(ctx, fmt.Sprintf("The previous plan was rejected. Please revise it with this feedback: %s", feedback))
 			sp.Stop()

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,9 @@ import (
 )
 
 const maxToolIterations = 10
+
+// StatusFunc is called to report status changes during processing.
+type StatusFunc func(msg string)
 
 type Agent struct {
 	llmClient  llm.Client
@@ -26,6 +30,7 @@ type Agent struct {
 	threadKey  string
 	turn       int
 	history    []llm.Message
+	onStatus   StatusFunc
 }
 
 type EmbedFunc func(ctx context.Context, text string) ([]float64, error)
@@ -44,6 +49,7 @@ type Config struct {
 	PlanHolder *tools.PlanHolder
 	Embedder   EmbedFunc
 	ContextDir string
+	OnStatus   StatusFunc
 }
 
 func New(cfg Config) *Agent {
@@ -58,6 +64,18 @@ func New(cfg Config) *Agent {
 		contextDir: cfg.ContextDir,
 		threadKey:  uuid.New().String(),
 		history:    []llm.Message{},
+		onStatus:   cfg.OnStatus,
+	}
+}
+
+// SetOnStatus sets the status callback. Can be changed between Run calls.
+func (a *Agent) SetOnStatus(fn StatusFunc) {
+	a.onStatus = fn
+}
+
+func (a *Agent) reportStatus(msg string) {
+	if a.onStatus != nil {
+		a.onStatus(msg)
 	}
 }
 
@@ -156,6 +174,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	var finalResponse string
 
 	for i := 0; i < maxToolIterations; i++ {
+		a.reportStatus("考え中...")
 		resp, err := a.llmClient.Chat(ctx, messages, toolDefs)
 		if err != nil {
 			return "", fmt.Errorf("llm chat: %w", err)
@@ -191,6 +210,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 				continue
 			}
 
+			a.reportStatus(toolStatusMessage(tc.Name, tc.Arguments))
 			result, err := tool.Execute(ctx, tc.Arguments)
 			if err != nil {
 				result = fmt.Sprintf("Error: %s", err)
@@ -258,6 +278,44 @@ func (a *Agent) saveToLTM(ctx context.Context, input, response string, emotion *
 		EmotionalIntensity: emotion.Intensity,
 	}
 	a.store.SaveMemory(ctx, mem)
+}
+
+func toolStatusMessage(name, args string) string {
+	var parsed struct {
+		Path    string `json:"path"`
+		Command string `json:"command"`
+		Title   string `json:"title"`
+	}
+	json.Unmarshal([]byte(args), &parsed)
+
+	switch name {
+	case "read_file":
+		if parsed.Path != "" {
+			return fmt.Sprintf("読み込み中: %s", parsed.Path)
+		}
+		return "ファイル読み込み中..."
+	case "write_file":
+		if parsed.Path != "" {
+			return fmt.Sprintf("書き込み中: %s", parsed.Path)
+		}
+		return "ファイル書き込み中..."
+	case "execute_command":
+		if parsed.Command != "" {
+			return fmt.Sprintf("実行中: %s", parsed.Command)
+		}
+		return "コマンド実行中..."
+	case "create_plan":
+		if parsed.Title != "" {
+			return fmt.Sprintf("プラン作成中: %s", parsed.Title)
+		}
+		return "プラン作成中..."
+	case "update_plan_step":
+		return "プラン更新中..."
+	case "show_plan":
+		return "プラン表示中..."
+	default:
+		return fmt.Sprintf("ツール実行中: %s", name)
+	}
 }
 
 func buildSystemPrompt(contextDir, memoryContext, planContext string) string {
