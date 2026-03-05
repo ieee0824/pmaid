@@ -1,6 +1,7 @@
 # Binary
 pmaid
 cmd/pmaid/pmaid
+/bin/
 
 # IDE
 .idea/
@@ -16,6 +17,11 @@ Thumbs.db
 # Test
 *.test
 coverage.out
+coverage.html
 
 # Memory data
 *.db
+
+# Config with secrets (example is tracked)
+config.toml
+!example/config.toml
