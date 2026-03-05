@@ -25,13 +25,28 @@ type Client struct {
 	model  oai.ChatModel
 }
 
-func New(model string, apiKey string) *Client {
-	var opts []option.RequestOption
+func New(model string, apiKey string, opts ...Option) *Client {
+	var reqOpts []option.RequestOption
 	if apiKey != "" {
-		opts = append(opts, option.WithAPIKey(apiKey))
+		reqOpts = append(reqOpts, option.WithAPIKey(apiKey))
 	}
-	c := oai.NewClient(opts...)
+	for _, o := range opts {
+		if o.BaseURL != "" {
+			reqOpts = append(reqOpts, option.WithBaseURL(o.BaseURL))
+		}
+	}
+	c := oai.NewClient(reqOpts...)
 	return &Client{client: c, model: oai.ChatModel(model)}
+}
+
+// Option holds optional client configuration.
+type Option struct {
+	BaseURL string
+}
+
+// WithBaseURL returns an Option that sets a custom API base URL.
+func WithBaseURL(url string) Option {
+	return Option{BaseURL: url}
 }
 
 func (c *Client) Chat(ctx context.Context, messages []llm.Message, tools []llm.ToolDef) (*llm.Response, error) {

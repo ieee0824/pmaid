@@ -35,10 +35,18 @@ date_boost = 0.15          # 日付一致時のスコアブースト
 emotional_boost = 0.12     # 感情的記憶のスコアブースト係数
 
 # 軽量LLM設定 (コンテキスト圧縮の要約生成等に使用、省略可)
+# provider: "google" (Gemini API), "openai", "local" (Ollama等)
+# --- Google AI API の場合 ---
 [light_llm]
-provider = "google"        # "google" or "openai"
+provider = "google"        # LLMプロバイダー
 api_key = ""               # APIキー (環境変数 GEMINI_API_KEY でも可)
 model = "gemma-3-4b-it"    # 軽量モデル名
+base_url = ""              # カスタムエンドポイント (空の場合デフォルト)
+# --- ローカルサーバー (Ollama等) の場合 ---
+# [light_llm]
+# provider = "local"
+# model = "gemma3:4b"
+# base_url = "http://localhost:11434/v1/"
 
 # エージェント設定
 [agent]

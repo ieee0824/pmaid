@@ -121,7 +121,11 @@ func main() {
 
 	// LLM client
 	apiKey := cfg.ResolveAPIKey()
-	llmClient := oaillm.New(cfg.LLM.Model, apiKey)
+	var llmOpts []oaillm.Option
+	if cfg.LLM.BaseURL != "" {
+		llmOpts = append(llmOpts, oaillm.WithBaseURL(cfg.LLM.BaseURL))
+	}
+	llmClient := oaillm.New(cfg.LLM.Model, apiKey, llmOpts...)
 
 	// Light LLM client (optional, for context compression etc.)
 	var lightClient llm.Client
@@ -129,9 +133,19 @@ func main() {
 		lightKey := cfg.ResolveLightAPIKey()
 		switch cfg.LightLLM.Provider {
 		case "google":
-			lightClient = googlm.New(cfg.LightLLM.Model, lightKey)
+			lightClient = googlm.New(cfg.LightLLM.Model, lightKey, cfg.LightLLM.BaseURL)
+		case "local", "openai":
+			var lightOpts []oaillm.Option
+			if cfg.LightLLM.BaseURL != "" {
+				lightOpts = append(lightOpts, oaillm.WithBaseURL(cfg.LightLLM.BaseURL))
+			}
+			lightClient = oaillm.New(cfg.LightLLM.Model, lightKey, lightOpts...)
 		default:
-			lightClient = oaillm.New(cfg.LightLLM.Model, lightKey)
+			var lightOpts []oaillm.Option
+			if cfg.LightLLM.BaseURL != "" {
+				lightOpts = append(lightOpts, oaillm.WithBaseURL(cfg.LightLLM.BaseURL))
+			}
+			lightClient = oaillm.New(cfg.LightLLM.Model, lightKey, lightOpts...)
 		}
 	}
 

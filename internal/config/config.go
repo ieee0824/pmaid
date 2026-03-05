@@ -26,6 +26,7 @@ type LLMConfig struct {
 	Provider string `toml:"provider"`
 	APIKey   string `toml:"api_key"`
 	Model    string `toml:"model"`
+	BaseURL  string `toml:"base_url"`
 }
 
 type MemoryConfig struct {
@@ -136,6 +137,8 @@ func resolveAPIKey(cfg LLMConfig) string {
 		return cfg.APIKey
 	}
 	switch cfg.Provider {
+	case "local":
+		return "" // ローカルサーバーはAPIキー不要
 	case "google":
 		return os.Getenv("GEMINI_API_KEY")
 	case "openai":

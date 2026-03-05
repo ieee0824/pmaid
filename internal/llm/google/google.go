@@ -28,9 +28,13 @@ type Client struct {
 	model  oai.ChatModel
 }
 
-func New(model string, apiKey string) *Client {
+func New(model string, apiKey string, customBaseURL string) *Client {
+	url := baseURL
+	if customBaseURL != "" {
+		url = customBaseURL
+	}
 	opts := []option.RequestOption{
-		option.WithBaseURL(baseURL),
+		option.WithBaseURL(url),
 	}
 	if apiKey != "" {
 		opts = append(opts, option.WithAPIKey(apiKey))
