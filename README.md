@@ -41,18 +41,58 @@ pmaid --model gpt-4o-mini
 
 ## Configuration
 
-環境変数で設定：
+### 設定ファイル
+
+`~/.pmaid/config.toml` に設定ファイルを配置できます（`--config` フラグでパス変更可能）。
+
+```toml
+model = "gpt-4o"
+context_dir = "."
+memory_path = "~/.pmaid/memory"
+
+[llm]
+provider = "openai"
+api_key = ""           # 環境変数 OPENAI_API_KEY でも可
+model = "gpt-4o"
+
+[memory]
+embedding_dim = 512
+
+[stm]
+max_items = 7
+activation_threshold = 0.1
+normal_decay_rate = 0.15
+emotional_decay_rate = 0.07
+refresh_boost = 0.3
+
+[ltm]
+top_k = 5
+similarity_threshold = 0.3
+thread_boost = 0.1
+date_boost = 0.15
+emotional_boost = 0.12
+```
+
+全項目にデフォルト値があるため、変更したい項目のみ記述すれば動作します。
+
+### 環境変数
 
 ```bash
 export OPENAI_API_KEY="your-api-key"
-export PMAID_MEMORY_PATH="~/.pmaid/memory"  # デフォルト: ~/.pmaid/memory
+export PMAID_MEMORY_PATH="~/.pmaid/memory"  # 設定ファイルより優先
 ```
+
+### 優先順位
+
+CLIフラグ > 環境変数 > 設定ファイル > デフォルト値
 
 ## Architecture
 
 ```
 cmd/pmaid/main.go              # CLIエントリポイント
 internal/
+  config/
+    config.go                  # TOML設定ファイル読み込み
   llm/
     llm.go                     # LLMインターフェース定義
     openai/openai.go           # OpenAI実装

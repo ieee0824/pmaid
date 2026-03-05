@@ -10,6 +10,7 @@ import (
 
 	memai "github.com/ieee0824/memAI-go"
 	"github.com/ieee0824/pmaid/internal/agent"
+	"github.com/ieee0824/pmaid/internal/config"
 	oaillm "github.com/ieee0824/pmaid/internal/llm/openai"
 	"github.com/ieee0824/pmaid/internal/memory"
 	"github.com/ieee0824/pmaid/internal/tools"
@@ -17,22 +18,39 @@ import (
 
 func main() {
 	query := flag.String("q", "", "Direct query (non-interactive mode)")
-	contextDir := flag.String("context", ".", "Context directory for file operations")
-	model := flag.String("model", "gpt-4o", "LLM model to use")
+	contextDir := flag.String("context", "", "Context directory for file operations")
+	model := flag.String("model", "", "LLM model to use")
+	configPath := flag.String("config", "", "Config file path (default: ~/.pmaid/config.toml)")
 	flag.Parse()
 
-	absContext, err := filepath.Abs(*contextDir)
+	// Load config
+	cfgPath := *configPath
+	if cfgPath == "" {
+		cfgPath = config.DefaultConfigPath()
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// CLI flags override config
+	if *model != "" {
+		cfg.Model = *model
+		cfg.LLM.Model = *model
+	}
+	if *contextDir != "" {
+		cfg.ContextDir = *contextDir
+	}
+
+	absContext, err := filepath.Abs(cfg.ContextDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error resolving context dir: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Memory path
-	memPath := os.Getenv("PMAID_MEMORY_PATH")
-	if memPath == "" {
-		home, _ := os.UserHomeDir()
-		memPath = filepath.Join(home, ".pmaid", "memory")
-	}
+	memPath := cfg.ResolveMemoryPath()
 	if err := os.MkdirAll(memPath, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating memory dir: %v\n", err)
 		os.Exit(1)
@@ -47,19 +65,29 @@ func main() {
 	defer store.Close()
 
 	// Embedder
-	embedder := memory.NewTFIDFEmbedder(512)
+	embedder := memory.NewTFIDFEmbedder(cfg.Memory.EmbeddingDim)
 
 	// STM
-	stm := memai.NewSTM(memai.STMConfig{})
+	stm := memai.NewSTM(memai.STMConfig{
+		MaxItems:            cfg.STM.MaxItems,
+		ActivationThreshold: cfg.STM.ActivationThreshold,
+		NormalDecayRate:     cfg.STM.NormalDecayRate,
+		EmotionalDecayRate:  cfg.STM.EmotionalDecayRate,
+		RefreshBoost:        cfg.STM.RefreshBoost,
+	})
 
 	// LTM
 	ltm := memai.NewLTM[string](store, embedder.EmbedFunc(), memai.LTMConfig{
-		TopK: 5,
+		TopK:                cfg.LTM.TopK,
+		SimilarityThreshold: cfg.LTM.SimilarityThreshold,
+		ThreadBoost:         cfg.LTM.ThreadBoost,
+		DateBoost:           cfg.LTM.DateBoost,
+		EmotionalBoost:      cfg.LTM.EmotionalBoost,
 	})
 
 	// LLM client
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	llmClient := oaillm.New(*model, apiKey)
+	apiKey := cfg.ResolveAPIKey()
+	llmClient := oaillm.New(cfg.LLM.Model, apiKey)
 
 	// Tools
 	toolRegistry := tools.NewRegistry(
