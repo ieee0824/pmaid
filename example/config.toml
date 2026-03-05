@@ -3,6 +3,7 @@
 # 全項目にデフォルト値があるため、変更したい項目のみ記述すれば動作します
 
 # トップレベル設定
+name = "pmaid"             # AIアシスタントの名前 (プロンプト表示やシステムプロンプトに使用)
 model = "gpt-4o"          # 使用するLLMモデル
 context_dir = "."          # デフォルトのコンテキストディレクトリ
 memory_path = ""           # メモリ保存先 (空の場合 ~/.pmaid/memory)
@@ -32,3 +33,8 @@ similarity_threshold = 0.3 # コサイン類似度の閾値
 thread_boost = 0.1         # 同一スレッドのスコアブースト
 date_boost = 0.15          # 日付一致時のスコアブースト
 emotional_boost = 0.12     # 感情的記憶のスコアブースト係数
+
+# エージェント設定
+[agent]
+max_tool_iterations = 50   # 1ターンあたりのツール呼び出し上限
+max_context_chars = 100000 # コンテキスト圧縮が発動する文字数上限

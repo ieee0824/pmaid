@@ -460,12 +460,12 @@ func TestMessagesCharCount(t *testing.T) {
 
 func TestBuildSystemPrompt(t *testing.T) {
 	t.Run("with context and memory", func(t *testing.T) {
-		prompt := buildSystemPrompt("/home/user/project", "## Relevant Memories\n- memory1", "", "")
+		prompt := buildSystemPrompt("testbot", "/home/user/project", "## Relevant Memories\n- memory1", "", "")
 		if prompt == "" {
 			t.Fatal("empty prompt")
 		}
-		if !contains(prompt, "pmaid") {
-			t.Error("expected 'pmaid' in prompt")
+		if !contains(prompt, "testbot") {
+			t.Error("expected 'testbot' in prompt")
 		}
 		if !contains(prompt, "/home/user/project") {
 			t.Error("expected context dir in prompt")
@@ -476,21 +476,21 @@ func TestBuildSystemPrompt(t *testing.T) {
 	})
 
 	t.Run("without memory", func(t *testing.T) {
-		prompt := buildSystemPrompt("/tmp", "", "", "")
+		prompt := buildSystemPrompt("pmaid", "/tmp", "", "", "")
 		if contains(prompt, "Relevant Memories") {
 			t.Error("should not contain memories section when empty")
 		}
 	})
 
 	t.Run("with plan context", func(t *testing.T) {
-		prompt := buildSystemPrompt("/tmp", "", "## Active Plan\n1. step one", "")
+		prompt := buildSystemPrompt("pmaid", "/tmp", "", "## Active Plan\n1. step one", "")
 		if !contains(prompt, "Active Plan") {
 			t.Error("expected plan context in prompt")
 		}
 	})
 
 	t.Run("contains planning instructions", func(t *testing.T) {
-		prompt := buildSystemPrompt("/tmp", "", "", "")
+		prompt := buildSystemPrompt("pmaid", "/tmp", "", "", "")
 		if !contains(prompt, "create_plan") {
 			t.Error("expected planning instructions in prompt")
 		}

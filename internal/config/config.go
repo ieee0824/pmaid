@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	Name       string `toml:"name"`
 	Model      string `toml:"model"`
 	ContextDir string `toml:"context_dir"`
 	MemoryPath string `toml:"memory_path"`
@@ -54,6 +55,7 @@ type AgentConfig struct {
 func DefaultConfig() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
+		Name:       "pmaid",
 		Model:      "gpt-4o",
 		ContextDir: ".",
 		MemoryPath: filepath.Join(home, ".pmaid", "memory"),

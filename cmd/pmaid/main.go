@@ -148,11 +148,14 @@ func main() {
 		PlanHolder:        planHolder,
 		Embedder:          embedder.EmbedFunc(),
 		ContextDir:        absContext,
+		Name:              cfg.Name,
 		SkillsContext:     skillsCtx,
 		Logger:            log,
 		MaxToolIterations: cfg.Agent.MaxToolIterations,
 		MaxContextChars:   cfg.Agent.MaxContextChars,
 	})
+
+	agentName := ag.Name()
 
 	// Spinner manager for pausing/resuming during confirmation
 	var activeSpinner *spinner.Spinner
@@ -202,7 +205,7 @@ func main() {
 	}
 
 	// Interactive mode
-	fmt.Println("pmaid - Programming AI Assistant with Memory")
+	fmt.Printf("%s - Programming AI Assistant with Memory\n", agentName)
 	fmt.Println("Type your message (Ctrl+D to exit)")
 	fmt.Println()
 
@@ -228,11 +231,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			continue
 		}
-		fmt.Printf("\npmaid> %s\n\n", result)
+		fmt.Printf("\n%s> %s\n\n", agentName, result)
 
 		// Plan approval flow
 		if ag.HasPendingPlan() {
-			handlePlanApproval(ag, scanner, ctx, &activeSpinner)
+			handlePlanApproval(ag, scanner, ctx, &activeSpinner, agentName)
 		}
 	}
 
@@ -309,7 +312,7 @@ func truncateStr(s string, n int) string {
 	return s[:n] + "..."
 }
 
-func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Context, spRef **spinner.Spinner) {
+func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Context, spRef **spinner.Spinner, agentName string) {
 	for {
 		fmt.Print("\nプランを承認しますか？ [y: 承認 / n: 却下 / e: 修正依頼]: ")
 		if !scanner.Scan() {
@@ -330,7 +333,7 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return
 			}
-			fmt.Printf("\npmaid> %s\n\n", result)
+			fmt.Printf("\n%s> %s\n\n", agentName, result)
 			return
 
 		case "n", "no", "いいえ":
@@ -354,7 +357,7 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return
 			}
-			fmt.Printf("\npmaid> %s\n\n", result)
+			fmt.Printf("\n%s> %s\n\n", agentName, result)
 			// Loop again for new plan approval if a new plan was created
 			if !ag.HasPendingPlan() {
 				return

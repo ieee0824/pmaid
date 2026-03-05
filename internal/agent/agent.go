@@ -41,6 +41,7 @@ type Agent struct {
 	history    []llm.Message
 	onStatus          StatusFunc
 	onConfirm         ConfirmFunc
+	name              string
 	skillsContext     string
 	log               *logger.Logger
 	maxToolIterations int
@@ -65,6 +66,7 @@ type Config struct {
 	ContextDir string
 	OnStatus          StatusFunc
 	OnConfirm         ConfirmFunc
+	Name              string
 	SkillsContext     string
 	Logger            *logger.Logger
 	MaxToolIterations int
@@ -84,6 +86,10 @@ func New(cfg Config) *Agent {
 	if maxCtx <= 0 {
 		maxCtx = defaultMaxContextChars
 	}
+	name := cfg.Name
+	if name == "" {
+		name = "pmaid"
+	}
 	return &Agent{
 		llmClient:         cfg.LLMClient,
 		stm:               cfg.STM,
@@ -97,11 +103,17 @@ func New(cfg Config) *Agent {
 		history:           []llm.Message{},
 		onStatus:          cfg.OnStatus,
 		onConfirm:         cfg.OnConfirm,
+		name:              name,
 		skillsContext:     cfg.SkillsContext,
 		log:               log,
 		maxToolIterations: maxIter,
 		maxContextChars:   maxCtx,
 	}
+}
+
+// Name returns the configured agent name.
+func (a *Agent) Name() string {
+	return a.name
 }
 
 // SetOnStatus sets the status callback. Can be changed between Run calls.
@@ -202,7 +214,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	}
 
 	// Build system prompt
-	systemPrompt := buildSystemPrompt(a.contextDir, memoryContext, planContext, a.skillsContext)
+	systemPrompt := buildSystemPrompt(a.name, a.contextDir, memoryContext, planContext, a.skillsContext)
 
 	// Build messages for LLM
 	messages := []llm.Message{
@@ -494,9 +506,9 @@ func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 	return messages
 }
 
-func buildSystemPrompt(contextDir, memoryContext, planContext, skillsContext string) string {
+func buildSystemPrompt(name, contextDir, memoryContext, planContext, skillsContext string) string {
 	var sb strings.Builder
-	sb.WriteString(`You are pmaid, a programming AI assistant with memory.
+	sb.WriteString(fmt.Sprintf(`You are %s, a programming AI assistant with memory.
 You help users with software engineering tasks including writing code, debugging, file operations, and running commands.
 
 ## Guidelines
@@ -521,7 +533,7 @@ You help users with software engineering tasks including writing code, debugging
 - For file paths or code identifiers with typos, infer the correct name from context (e.g. existing files, common patterns)
 - If a correction significantly changes the meaning, briefly mention what you interpreted (e.g. "「〇〇」として処理します")
 - Examples: "ふぁいるよんで" → read file, "comit" → commit, "tset" → test
-`)
+`, name))
 
 	if contextDir != "" {
 		sb.WriteString(fmt.Sprintf("\n## Context\nWorking directory: %s\n", contextDir))
