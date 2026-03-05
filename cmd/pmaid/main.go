@@ -13,6 +13,7 @@ import (
 	"github.com/ieee0824/pmaid/internal/agent"
 	"github.com/ieee0824/pmaid/internal/config"
 	oaillm "github.com/ieee0824/pmaid/internal/llm/openai"
+	"github.com/ieee0824/pmaid/internal/logger"
 	"github.com/ieee0824/pmaid/internal/memory"
 	"github.com/ieee0824/pmaid/internal/skills"
 	"github.com/ieee0824/pmaid/internal/spinner"
@@ -20,6 +21,12 @@ import (
 )
 
 func main() {
+	// Handle subcommands before flag parsing
+	if len(os.Args) > 1 && os.Args[1] == "history" {
+		runHistory(os.Args[2:])
+		return
+	}
+
 	query := flag.String("q", "", "Direct query (non-interactive mode)")
 	contextDir := flag.String("context", "", "Context directory for file operations")
 	model := flag.String("model", "", "LLM model to use")
@@ -72,6 +79,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error creating memory dir: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Logger
+	log, err := logger.New(filepath.Join(memPath, "logs"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating logger: %v\n", err)
+		os.Exit(1)
+	}
+	defer log.Close()
 
 	// SQLite store
 	store, err := memory.NewSQLiteStore(filepath.Join(memPath, "memories.db"))
@@ -134,6 +149,7 @@ func main() {
 		Embedder:      embedder.EmbedFunc(),
 		ContextDir:    absContext,
 		SkillsContext: skillsCtx,
+		Logger:        log,
 	})
 
 	// Spinner manager for pausing/resuming during confirmation
@@ -221,6 +237,74 @@ func main() {
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 	}
+}
+
+func runHistory(args []string) {
+	fs := flag.NewFlagSet("history", flag.ExitOnError)
+	limit := fs.Int("n", 20, "Number of entries to show")
+	configPath := fs.String("config", "", "Config file path")
+	fs.Parse(args)
+
+	cfgPath := *configPath
+	if cfgPath == "" {
+		cfgPath = config.DefaultConfigPath()
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	memPath := cfg.ResolveMemoryPath()
+	store, err := memory.NewSQLiteStore(filepath.Join(memPath, "memories.db"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening memory store: %v\n", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	searchQuery := fs.Arg(0)
+
+	var entries []memory.MemoryEntry
+	if searchQuery != "" {
+		entries, err = store.SearchContent(ctx, searchQuery, *limit)
+	} else {
+		entries, err = store.ListRecent(ctx, *limit)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("会話履歴がありません。")
+		return
+	}
+
+	// Display in chronological order (entries are newest-first)
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		fmt.Printf("─── %s ───\n", e.EventDate)
+		// Parse "User: ...\nAssistant: ..." format
+		parts := strings.SplitN(e.Content, "\nAssistant: ", 2)
+		if len(parts) == 2 {
+			userMsg := strings.TrimPrefix(parts[0], "User: ")
+			fmt.Printf("  you>   %s\n", userMsg)
+			fmt.Printf("  pmaid> %s\n", truncateStr(parts[1], 200))
+		} else {
+			fmt.Printf("  %s\n", truncateStr(e.Content, 200))
+		}
+		fmt.Println()
+	}
+	fmt.Printf("(%d件表示)\n", len(entries))
+}
+
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Context, spRef **spinner.Spinner) {

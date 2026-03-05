@@ -101,6 +101,63 @@ func (s *SQLiteStore) UpdateBoost(ctx context.Context, id string, delta float64)
 	return nil
 }
 
+// MemoryEntry is a simplified view of a memory for display.
+type MemoryEntry struct {
+	ID        string
+	Content   string
+	EventDate string
+	ThreadKey string
+}
+
+// ListRecent returns the most recent n memories ordered by rowid descending.
+func (s *SQLiteStore) ListRecent(ctx context.Context, limit int) ([]MemoryEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, content, event_date, thread_key
+		FROM memories
+		ORDER BY rowid DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []MemoryEntry
+	for rows.Next() {
+		var e MemoryEntry
+		if err := rows.Scan(&e.ID, &e.Content, &e.EventDate, &e.ThreadKey); err != nil {
+			return nil, fmt.Errorf("scan entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// SearchContent returns memories whose content contains the query string.
+func (s *SQLiteStore) SearchContent(ctx context.Context, query string, limit int) ([]MemoryEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, content, event_date, thread_key
+		FROM memories
+		WHERE content LIKE '%' || ? || '%'
+		ORDER BY rowid DESC
+		LIMIT ?
+	`, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search content: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []MemoryEntry
+	for rows.Next() {
+		var e MemoryEntry
+		if err := rows.Scan(&e.ID, &e.Content, &e.EventDate, &e.ThreadKey); err != nil {
+			return nil, fmt.Errorf("scan entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
