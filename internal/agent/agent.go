@@ -18,6 +18,10 @@ const maxToolIterations = 10
 // StatusFunc is called to report status changes during processing.
 type StatusFunc func(msg string)
 
+// ConfirmFunc is called to ask user confirmation before destructive tool execution.
+// It receives a description of what will happen and returns true if approved.
+type ConfirmFunc func(description string) bool
+
 type Agent struct {
 	llmClient  llm.Client
 	stm        *memai.STM
@@ -31,6 +35,7 @@ type Agent struct {
 	turn       int
 	history    []llm.Message
 	onStatus   StatusFunc
+	onConfirm  ConfirmFunc
 }
 
 type EmbedFunc func(ctx context.Context, text string) ([]float64, error)
@@ -50,6 +55,7 @@ type Config struct {
 	Embedder   EmbedFunc
 	ContextDir string
 	OnStatus   StatusFunc
+	OnConfirm  ConfirmFunc
 }
 
 func New(cfg Config) *Agent {
@@ -65,12 +71,18 @@ func New(cfg Config) *Agent {
 		threadKey:  uuid.New().String(),
 		history:    []llm.Message{},
 		onStatus:   cfg.OnStatus,
+		onConfirm:  cfg.OnConfirm,
 	}
 }
 
 // SetOnStatus sets the status callback. Can be changed between Run calls.
 func (a *Agent) SetOnStatus(fn StatusFunc) {
 	a.onStatus = fn
+}
+
+// SetOnConfirm sets the confirmation callback for destructive tools.
+func (a *Agent) SetOnConfirm(fn ConfirmFunc) {
+	a.onConfirm = fn
 }
 
 func (a *Agent) reportStatus(msg string) {
@@ -210,6 +222,19 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 				continue
 			}
 
+			// Confirmation for destructive tools
+			if a.needsConfirmation(tc.Name) {
+				desc := toolConfirmMessage(tc.Name, tc.Arguments)
+				if !a.confirm(desc) {
+					messages = append(messages, llm.Message{
+						Role:       llm.RoleTool,
+						Content:    "Error: user denied this action.",
+						ToolCallID: tc.ID,
+					})
+					continue
+				}
+			}
+
 			a.reportStatus(toolStatusMessage(tc.Name, tc.Arguments))
 			result, err := tool.Execute(ctx, tc.Arguments)
 			if err != nil {
@@ -244,6 +269,41 @@ done:
 	a.saveToLTM(ctx, userInput, finalResponse, emotion)
 
 	return finalResponse, nil
+}
+
+func (a *Agent) needsConfirmation(name string) bool {
+	if a.onConfirm == nil {
+		return false
+	}
+	switch name {
+	case "write_file", "execute_command":
+		return true
+	}
+	return false
+}
+
+func (a *Agent) confirm(desc string) bool {
+	if a.onConfirm == nil {
+		return true
+	}
+	return a.onConfirm(desc)
+}
+
+func toolConfirmMessage(name, args string) string {
+	var parsed struct {
+		Path    string `json:"path"`
+		Command string `json:"command"`
+	}
+	json.Unmarshal([]byte(args), &parsed)
+
+	switch name {
+	case "write_file":
+		return fmt.Sprintf("ファイルを書き込みます: %s", parsed.Path)
+	case "execute_command":
+		return fmt.Sprintf("コマンドを実行します: %s", parsed.Command)
+	default:
+		return fmt.Sprintf("ツールを実行します: %s", name)
+	}
 }
 
 func (a *Agent) isPlanRequiredTool(name string) bool {

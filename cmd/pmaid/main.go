@@ -130,14 +130,45 @@ func main() {
 		ContextDir: absContext,
 	})
 
+	// Spinner manager for pausing/resuming during confirmation
+	var activeSpinner *spinner.Spinner
+
+	confirmScanner := bufio.NewScanner(os.Stdin)
+	confirmScanner.Buffer(make([]byte, 1024), 1024)
+
+	ag.SetOnConfirm(func(desc string) bool {
+		// Pause spinner while waiting for user input
+		if activeSpinner != nil {
+			activeSpinner.Stop()
+		}
+		fmt.Fprintf(os.Stderr, "\n⚠ %s\n", desc)
+		fmt.Fprint(os.Stderr, "実行しますか？ [y/n]: ")
+		if !confirmScanner.Scan() {
+			activeSpinner = spinner.New(os.Stderr, "考え中...")
+			ag.SetOnStatus(activeSpinner.SetMessage)
+			activeSpinner.Start()
+			return false
+		}
+		answer := strings.TrimSpace(strings.ToLower(confirmScanner.Text()))
+		approved := answer == "y" || answer == "yes" || answer == "はい"
+		if !approved {
+			fmt.Fprintln(os.Stderr, "却下しました。")
+		}
+		// Resume spinner
+		activeSpinner = spinner.New(os.Stderr, "考え中...")
+		ag.SetOnStatus(activeSpinner.SetMessage)
+		activeSpinner.Start()
+		return approved
+	})
+
 	ctx := context.Background()
 
 	if *query != "" {
-		sp := spinner.New(os.Stderr, "考え中...")
-		ag.SetOnStatus(sp.SetMessage)
-		sp.Start()
+		activeSpinner = spinner.New(os.Stderr, "考え中...")
+		ag.SetOnStatus(activeSpinner.SetMessage)
+		activeSpinner.Start()
 		result, err := ag.Run(ctx, *query)
-		sp.Stop()
+		activeSpinner.Stop()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -164,11 +195,11 @@ func main() {
 			continue
 		}
 
-		sp := spinner.New(os.Stderr, "考え中...")
-		ag.SetOnStatus(sp.SetMessage)
-		sp.Start()
+		activeSpinner = spinner.New(os.Stderr, "考え中...")
+		ag.SetOnStatus(activeSpinner.SetMessage)
+		activeSpinner.Start()
 		result, err := ag.Run(ctx, input)
-		sp.Stop()
+		activeSpinner.Stop()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			continue
@@ -177,7 +208,7 @@ func main() {
 
 		// Plan approval flow
 		if ag.HasPendingPlan() {
-			handlePlanApproval(ag, scanner, ctx)
+			handlePlanApproval(ag, scanner, ctx, &activeSpinner)
 		}
 	}
 
@@ -186,7 +217,7 @@ func main() {
 	}
 }
 
-func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Context) {
+func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Context, spRef **spinner.Spinner) {
 	for {
 		fmt.Print("\nプランを承認しますか？ [y: 承認 / n: 却下 / e: 修正依頼]: ")
 		if !scanner.Scan() {
@@ -198,11 +229,11 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 		case "y", "yes", "はい":
 			ag.ApprovePlan()
 			fmt.Print("\nプランを承認しました。実行を開始します。\n\n")
-			sp := spinner.New(os.Stderr, "実行中...")
-			ag.SetOnStatus(sp.SetMessage)
-			sp.Start()
+			*spRef = spinner.New(os.Stderr, "実行中...")
+			ag.SetOnStatus((*spRef).SetMessage)
+			(*spRef).Start()
 			result, err := ag.Run(ctx, "Plan approved. Please execute the plan step by step.")
-			sp.Stop()
+			(*spRef).Stop()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return
@@ -222,11 +253,11 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 			}
 			feedback := scanner.Text()
 			ag.RejectPlan()
-			sp := spinner.New(os.Stderr, "修正中...")
-			ag.SetOnStatus(sp.SetMessage)
-			sp.Start()
+			*spRef = spinner.New(os.Stderr, "修正中...")
+			ag.SetOnStatus((*spRef).SetMessage)
+			(*spRef).Start()
 			result, err := ag.Run(ctx, fmt.Sprintf("The previous plan was rejected. Please revise it with this feedback: %s", feedback))
-			sp.Stop()
+			(*spRef).Stop()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				return
