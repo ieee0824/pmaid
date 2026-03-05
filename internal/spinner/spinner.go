@@ -63,3 +63,12 @@ func (s *Spinner) Stop() {
 	close(s.done)
 	s.wg.Wait()
 }
+
+// RenderOnce prints the current message once (no animation) with the first frame.
+// Useful when you want the latest status to be visible immediately.
+func (s *Spinner) RenderOnce() {
+	s.mu.Lock()
+	msg := s.msg
+	s.mu.Unlock()
+	fmt.Fprintf(s.w, "\r\033[K%s %s", frames[0], msg)
+}
