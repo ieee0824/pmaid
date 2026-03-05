@@ -14,6 +14,7 @@ import (
 	"github.com/ieee0824/pmaid/internal/config"
 	oaillm "github.com/ieee0824/pmaid/internal/llm/openai"
 	"github.com/ieee0824/pmaid/internal/memory"
+	"github.com/ieee0824/pmaid/internal/skills"
 	"github.com/ieee0824/pmaid/internal/spinner"
 	"github.com/ieee0824/pmaid/internal/tools"
 )
@@ -118,16 +119,21 @@ func main() {
 		tools.NewShowPlan(planHolder),
 	)
 
+	// Load skills from ~/.pmaid/skills, ./.pmaid/skills, ./.agent/skills
+	loadedSkills := skills.Load(skills.GlobalDir(), skills.ProjectDir(absContext), skills.AgentDir(absContext))
+	skillsCtx := skills.FormatForPrompt(loadedSkills)
+
 	// Agent
 	ag := agent.New(agent.Config{
-		LLMClient:  llmClient,
-		STM:        stm,
-		LTM:        ltm,
-		Store:      store,
-		Tools:      toolRegistry,
-		PlanHolder: planHolder,
-		Embedder:   embedder.EmbedFunc(),
-		ContextDir: absContext,
+		LLMClient:     llmClient,
+		STM:           stm,
+		LTM:           ltm,
+		Store:         store,
+		Tools:         toolRegistry,
+		PlanHolder:    planHolder,
+		Embedder:      embedder.EmbedFunc(),
+		ContextDir:    absContext,
+		SkillsContext: skillsCtx,
 	})
 
 	// Spinner manager for pausing/resuming during confirmation

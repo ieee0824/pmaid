@@ -34,8 +34,9 @@ type Agent struct {
 	threadKey  string
 	turn       int
 	history    []llm.Message
-	onStatus   StatusFunc
-	onConfirm  ConfirmFunc
+	onStatus      StatusFunc
+	onConfirm     ConfirmFunc
+	skillsContext string
 }
 
 type EmbedFunc func(ctx context.Context, text string) ([]float64, error)
@@ -54,8 +55,9 @@ type Config struct {
 	PlanHolder *tools.PlanHolder
 	Embedder   EmbedFunc
 	ContextDir string
-	OnStatus   StatusFunc
-	OnConfirm  ConfirmFunc
+	OnStatus      StatusFunc
+	OnConfirm     ConfirmFunc
+	SkillsContext string
 }
 
 func New(cfg Config) *Agent {
@@ -70,8 +72,9 @@ func New(cfg Config) *Agent {
 		contextDir: cfg.ContextDir,
 		threadKey:  uuid.New().String(),
 		history:    []llm.Message{},
-		onStatus:   cfg.OnStatus,
-		onConfirm:  cfg.OnConfirm,
+		onStatus:      cfg.OnStatus,
+		onConfirm:     cfg.OnConfirm,
+		skillsContext: cfg.SkillsContext,
 	}
 }
 
@@ -172,7 +175,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	}
 
 	// Build system prompt
-	systemPrompt := buildSystemPrompt(a.contextDir, memoryContext, planContext)
+	systemPrompt := buildSystemPrompt(a.contextDir, memoryContext, planContext, a.skillsContext)
 
 	// Build messages for LLM
 	messages := []llm.Message{
@@ -378,7 +381,7 @@ func toolStatusMessage(name, args string) string {
 	}
 }
 
-func buildSystemPrompt(contextDir, memoryContext, planContext string) string {
+func buildSystemPrompt(contextDir, memoryContext, planContext, skillsContext string) string {
 	var sb strings.Builder
 	sb.WriteString(`You are pmaid, a programming AI assistant with memory.
 You help users with software engineering tasks including writing code, debugging, file operations, and running commands.
@@ -413,6 +416,10 @@ You help users with software engineering tasks including writing code, debugging
 
 	if planContext != "" {
 		sb.WriteString("\n" + planContext + "\n")
+	}
+
+	if skillsContext != "" {
+		sb.WriteString("\n" + skillsContext + "\n")
 	}
 
 	if memoryContext != "" {
