@@ -237,9 +237,93 @@ func TestAgent_HistoryTrimming(t *testing.T) {
 	}
 }
 
+func TestAgent_PlanFlow(t *testing.T) {
+	planHolder := &tools.PlanHolder{}
+
+	mock := &mockLLMClient{
+		responses: []*llm.Response{
+			// LLM creates a plan
+			{Message: llm.Message{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{
+					{ID: "call-1", Name: "create_plan", Arguments: `{"title":"Refactor","steps":["analyze","refactor","test"]}`},
+				},
+			}},
+		},
+	}
+	store := newMockStore()
+
+	ag := New(Config{
+		LLMClient:  mock,
+		STM:        memai.NewSTM(memai.STMConfig{}),
+		LTM:        memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+		Store:      store,
+		Tools:      tools.NewRegistry(tools.NewCreatePlan(planHolder), tools.NewUpdatePlanStep(planHolder)),
+		PlanHolder: planHolder,
+		Embedder:   dummyEmbedder,
+		ContextDir: "/tmp",
+	})
+
+	result, err := ag.Run(context.Background(), "refactor the codebase")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Plan should be created and pending
+	if !ag.HasPendingPlan() {
+		t.Error("expected pending plan")
+	}
+	if !contains(result, "Refactor") {
+		t.Errorf("result should contain plan title, got: %s", result)
+	}
+
+	// Approve and verify
+	ag.ApprovePlan()
+	if ag.HasPendingPlan() {
+		t.Error("plan should no longer be pending after approval")
+	}
+}
+
+func TestAgent_PlanReject(t *testing.T) {
+	planHolder := &tools.PlanHolder{}
+
+	mock := &mockLLMClient{
+		responses: []*llm.Response{
+			{Message: llm.Message{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.ToolCall{
+					{ID: "call-1", Name: "create_plan", Arguments: `{"title":"Bad Plan","steps":["step1"]}`},
+				},
+			}},
+		},
+	}
+	store := newMockStore()
+
+	ag := New(Config{
+		LLMClient:  mock,
+		STM:        memai.NewSTM(memai.STMConfig{}),
+		LTM:        memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+		Store:      store,
+		Tools:      tools.NewRegistry(tools.NewCreatePlan(planHolder)),
+		PlanHolder: planHolder,
+		Embedder:   dummyEmbedder,
+		ContextDir: "/tmp",
+	})
+
+	ag.Run(context.Background(), "do something big")
+
+	ag.RejectPlan()
+	if ag.HasPendingPlan() {
+		t.Error("plan should be cleared after rejection")
+	}
+	if ag.CurrentPlan() != "" {
+		t.Error("CurrentPlan should be empty after rejection")
+	}
+}
+
 func TestBuildSystemPrompt(t *testing.T) {
 	t.Run("with context and memory", func(t *testing.T) {
-		prompt := buildSystemPrompt("/home/user/project", "## Relevant Memories\n- memory1")
+		prompt := buildSystemPrompt("/home/user/project", "## Relevant Memories\n- memory1", "")
 		if prompt == "" {
 			t.Fatal("empty prompt")
 		}
@@ -255,9 +339,23 @@ func TestBuildSystemPrompt(t *testing.T) {
 	})
 
 	t.Run("without memory", func(t *testing.T) {
-		prompt := buildSystemPrompt("/tmp", "")
+		prompt := buildSystemPrompt("/tmp", "", "")
 		if contains(prompt, "Relevant Memories") {
 			t.Error("should not contain memories section when empty")
+		}
+	})
+
+	t.Run("with plan context", func(t *testing.T) {
+		prompt := buildSystemPrompt("/tmp", "", "## Active Plan\n1. step one")
+		if !contains(prompt, "Active Plan") {
+			t.Error("expected plan context in prompt")
+		}
+	})
+
+	t.Run("contains planning instructions", func(t *testing.T) {
+		prompt := buildSystemPrompt("/tmp", "", "")
+		if !contains(prompt, "create_plan") {
+			t.Error("expected planning instructions in prompt")
 		}
 	})
 }

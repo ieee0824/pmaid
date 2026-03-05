@@ -20,6 +20,7 @@ type Agent struct {
 	ltm        *memai.LTM[string]
 	store      MemoryStoreWithBoost
 	toolReg    *tools.Registry
+	planHolder *tools.PlanHolder
 	embedder   EmbedFunc
 	contextDir string
 	threadKey  string
@@ -40,6 +41,7 @@ type Config struct {
 	LTM        *memai.LTM[string]
 	Store      MemoryStoreWithBoost
 	Tools      *tools.Registry
+	PlanHolder *tools.PlanHolder
 	Embedder   EmbedFunc
 	ContextDir string
 }
@@ -51,11 +53,42 @@ func New(cfg Config) *Agent {
 		ltm:        cfg.LTM,
 		store:      cfg.Store,
 		toolReg:    cfg.Tools,
+		planHolder: cfg.PlanHolder,
 		embedder:   cfg.Embedder,
 		contextDir: cfg.ContextDir,
 		threadKey:  uuid.New().String(),
 		history:    []llm.Message{},
 	}
+}
+
+// HasPendingPlan returns true if there is a plan waiting for user approval.
+func (a *Agent) HasPendingPlan() bool {
+	if a.planHolder == nil || a.planHolder.Current == nil {
+		return false
+	}
+	return !a.planHolder.Current.IsApproved()
+}
+
+// ApprovePlan approves the current plan.
+func (a *Agent) ApprovePlan() {
+	if a.planHolder != nil && a.planHolder.Current != nil {
+		a.planHolder.Current.Approve()
+	}
+}
+
+// RejectPlan clears the current plan.
+func (a *Agent) RejectPlan() {
+	if a.planHolder != nil {
+		a.planHolder.Current = nil
+	}
+}
+
+// CurrentPlan returns the current plan string representation, or empty.
+func (a *Agent) CurrentPlan() string {
+	if a.planHolder == nil || a.planHolder.Current == nil {
+		return ""
+	}
+	return a.planHolder.Current.String()
 }
 
 func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
@@ -99,8 +132,17 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	// STM update
 	a.stm.Update(a.turn, userInput, emotion)
 
+	// Build plan context
+	var planContext string
+	if a.planHolder != nil && a.planHolder.Current != nil {
+		p := a.planHolder.Current
+		if p.IsApproved() && !p.IsComplete() {
+			planContext = "## Active Plan (approved)\n" + p.String()
+		}
+	}
+
 	// Build system prompt
-	systemPrompt := buildSystemPrompt(a.contextDir, memoryContext)
+	systemPrompt := buildSystemPrompt(a.contextDir, memoryContext, planContext)
 
 	// Build messages for LLM
 	messages := []llm.Message{
@@ -139,6 +181,16 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 				continue
 			}
 
+			// Check if plan is required but not approved for destructive tools
+			if a.isPlanRequiredTool(tc.Name) && a.hasPendingUnapprovedPlan() {
+				messages = append(messages, llm.Message{
+					Role:       llm.RoleTool,
+					Content:    "Error: plan must be approved by user before executing this action. Wait for user approval.",
+					ToolCallID: tc.ID,
+				})
+				continue
+			}
+
 			result, err := tool.Execute(ctx, tc.Arguments)
 			if err != nil {
 				result = fmt.Sprintf("Error: %s", err)
@@ -149,9 +201,16 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 				Content:    result,
 				ToolCallID: tc.ID,
 			})
+
+			// If a plan was just created, stop the tool loop to let user review
+			if tc.Name == "create_plan" && a.HasPendingPlan() {
+				finalResponse = result
+				goto done
+			}
 		}
 	}
 
+done:
 	// Update conversation history (keep last 20 messages to avoid unbounded growth)
 	a.history = append(a.history,
 		llm.Message{Role: llm.RoleUser, Content: userInput},
@@ -165,6 +224,22 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	a.saveToLTM(ctx, userInput, finalResponse, emotion)
 
 	return finalResponse, nil
+}
+
+func (a *Agent) isPlanRequiredTool(name string) bool {
+	switch name {
+	case "write_file", "execute_command":
+		return true
+	}
+	return false
+}
+
+func (a *Agent) hasPendingUnapprovedPlan() bool {
+	if a.planHolder == nil || a.planHolder.Current == nil {
+		return false
+	}
+	p := a.planHolder.Current
+	return !p.IsApproved() && !p.IsComplete()
 }
 
 func (a *Agent) saveToLTM(ctx context.Context, input, response string, emotion *memai.EmotionalState) {
@@ -185,7 +260,7 @@ func (a *Agent) saveToLTM(ctx context.Context, input, response string, emotion *
 	a.store.SaveMemory(ctx, mem)
 }
 
-func buildSystemPrompt(contextDir, memoryContext string) string {
+func buildSystemPrompt(contextDir, memoryContext, planContext string) string {
 	var sb strings.Builder
 	sb.WriteString(`You are pmaid, a programming AI assistant with memory.
 You help users with software engineering tasks including writing code, debugging, file operations, and running commands.
@@ -196,6 +271,14 @@ You help users with software engineering tasks including writing code, debugging
 - When asked to read files, use the read_file tool
 - When asked to run commands, use the execute_command tool
 - Always explain what you're doing before using tools
+
+## Planning
+- For large tasks (multi-file changes, refactoring, new features with multiple components), ALWAYS create a plan first using create_plan
+- A plan breaks the task into clear, ordered steps
+- After creating a plan, STOP and wait for user approval — do NOT execute any write_file or execute_command until approved
+- Once approved, follow the plan step by step, updating each step's status with update_plan_step
+- Mark steps as "in_progress" when starting and "completed" when done
+- For simple tasks (single file edit, quick question), skip planning and execute directly
 
 ## Typo Handling
 - User input may contain typos, misspellings, or grammatical errors in both Japanese and English
@@ -208,6 +291,10 @@ You help users with software engineering tasks including writing code, debugging
 
 	if contextDir != "" {
 		sb.WriteString(fmt.Sprintf("\n## Context\nWorking directory: %s\n", contextDir))
+	}
+
+	if planContext != "" {
+		sb.WriteString("\n" + planContext + "\n")
 	}
 
 	if memoryContext != "" {
