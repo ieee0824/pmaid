@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	memai "github.com/ieee0824/memAI-go"
 	"github.com/ieee0824/pmaid/internal/llm"
+	"github.com/ieee0824/pmaid/internal/logger"
 	"github.com/ieee0824/pmaid/internal/tools"
 )
 
@@ -37,6 +38,7 @@ type Agent struct {
 	onStatus      StatusFunc
 	onConfirm     ConfirmFunc
 	skillsContext string
+	log           *logger.Logger
 }
 
 type EmbedFunc func(ctx context.Context, text string) ([]float64, error)
@@ -58,23 +60,29 @@ type Config struct {
 	OnStatus      StatusFunc
 	OnConfirm     ConfirmFunc
 	SkillsContext string
+	Logger        *logger.Logger
 }
 
 func New(cfg Config) *Agent {
+	log := cfg.Logger
+	if log == nil {
+		log = logger.NewNop()
+	}
 	return &Agent{
-		llmClient:  cfg.LLMClient,
-		stm:        cfg.STM,
-		ltm:        cfg.LTM,
-		store:      cfg.Store,
-		toolReg:    cfg.Tools,
-		planHolder: cfg.PlanHolder,
-		embedder:   cfg.Embedder,
-		contextDir: cfg.ContextDir,
-		threadKey:  uuid.New().String(),
-		history:    []llm.Message{},
+		llmClient:     cfg.LLMClient,
+		stm:           cfg.STM,
+		ltm:           cfg.LTM,
+		store:         cfg.Store,
+		toolReg:       cfg.Tools,
+		planHolder:    cfg.PlanHolder,
+		embedder:      cfg.Embedder,
+		contextDir:    cfg.ContextDir,
+		threadKey:     uuid.New().String(),
+		history:       []llm.Message{},
 		onStatus:      cfg.OnStatus,
 		onConfirm:     cfg.OnConfirm,
 		skillsContext: cfg.SkillsContext,
+		log:           log,
 	}
 }
 
@@ -126,6 +134,7 @@ func (a *Agent) CurrentPlan() string {
 
 func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	a.turn++
+	a.log.Info("Run start: turn=%d input=%q", a.turn, truncate(userInput, 100))
 
 	// Emotion analysis
 	emotion := memai.AnalyzeEmotion(userInput, memai.LangJapanese)
@@ -189,14 +198,19 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	var finalResponse string
 
 	for i := 0; i < maxToolIterations; i++ {
+		a.log.Debug("LLM call: iteration=%d messages=%d", i, len(messages))
 		a.reportStatus("考え中...")
 		resp, err := a.llmClient.Chat(ctx, messages, toolDefs)
 		if err != nil {
+			a.log.Error("LLM error: %v", err)
 			return "", fmt.Errorf("llm chat: %w", err)
 		}
 
+		a.log.Debug("LLM response: content_len=%d tool_calls=%d", len(resp.Message.Content), len(resp.Message.ToolCalls))
+
 		if len(resp.Message.ToolCalls) == 0 {
 			finalResponse = resp.Message.Content
+			a.log.Info("LLM final response: len=%d", len(finalResponse))
 			break
 		}
 
@@ -205,8 +219,11 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 		// Execute each tool call
 		for _, tc := range resp.Message.ToolCalls {
+			a.log.Info("Tool call: name=%s args=%s", tc.Name, truncate(tc.Arguments, 200))
+
 			tool, ok := a.toolReg.Get(tc.Name)
 			if !ok {
+				a.log.Warn("Unknown tool: %s", tc.Name)
 				messages = append(messages, llm.Message{
 					Role:       llm.RoleTool,
 					Content:    fmt.Sprintf("Error: unknown tool '%s'", tc.Name),
@@ -217,6 +234,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 
 			// Check if plan is required but not approved for destructive tools
 			if a.isPlanRequiredTool(tc.Name) && a.hasPendingUnapprovedPlan() {
+				a.log.Warn("Tool blocked (plan not approved): %s", tc.Name)
 				messages = append(messages, llm.Message{
 					Role:       llm.RoleTool,
 					Content:    "Error: plan must be approved by user before executing this action. Wait for user approval.",
@@ -229,6 +247,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 			if a.needsConfirmation(tc.Name) {
 				desc := toolConfirmMessage(tc.Name, tc.Arguments)
 				if !a.confirm(desc) {
+					a.log.Info("Tool denied by user: %s", tc.Name)
 					messages = append(messages, llm.Message{
 						Role:       llm.RoleTool,
 						Content:    "Error: user denied this action.",
@@ -236,13 +255,16 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 					})
 					continue
 				}
+				a.log.Info("Tool approved by user: %s", tc.Name)
 			}
 
 			a.reportStatus(toolStatusMessage(tc.Name, tc.Arguments))
 			result, err := tool.Execute(ctx, tc.Arguments)
 			if err != nil {
+				a.log.Error("Tool error: name=%s err=%v", tc.Name, err)
 				result = fmt.Sprintf("Error: %s", err)
 			}
+			a.log.Debug("Tool result: name=%s len=%d", tc.Name, len(result))
 
 			messages = append(messages, llm.Message{
 				Role:       llm.RoleTool,
@@ -258,6 +280,12 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		}
 	}
 
+	// Loop exhausted without a final text response
+	if finalResponse == "" {
+		a.log.Warn("Tool loop exhausted after %d iterations without final response", maxToolIterations)
+		finalResponse = "（ツール呼び出しが上限に達しました。処理を中断します。続きが必要であれば再度指示してください。）"
+	}
+
 done:
 	// Update conversation history (keep last 20 messages to avoid unbounded growth)
 	a.history = append(a.history,
@@ -271,6 +299,7 @@ done:
 	// Save to LTM
 	a.saveToLTM(ctx, userInput, finalResponse, emotion)
 
+	a.log.Info("Run end: turn=%d response_len=%d", a.turn, len(finalResponse))
 	return finalResponse, nil
 }
 
@@ -341,6 +370,13 @@ func (a *Agent) saveToLTM(ctx context.Context, input, response string, emotion *
 		EmotionalIntensity: emotion.Intensity,
 	}
 	a.store.SaveMemory(ctx, mem)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 func toolStatusMessage(name, args string) string {
