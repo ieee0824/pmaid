@@ -371,13 +371,15 @@ func (a *Agent) confirm(desc string) bool {
 func toolConfirmMessage(name, args string) string {
 	var parsed struct {
 		Path    string `json:"path"`
+		Content string `json:"content"`
 		Command string `json:"command"`
 	}
 	json.Unmarshal([]byte(args), &parsed)
 
 	switch name {
 	case "write_file":
-		return fmt.Sprintf("ファイルを書き込みます: %s", parsed.Path)
+		msg := fmt.Sprintf("ファイルを書き込みます: %s\n--- 内容 ---\n%s\n--- 内容終わり ---", parsed.Path, parsed.Content)
+		return msg
 	case "execute_command":
 		return fmt.Sprintf("コマンドを実行します: %s", parsed.Command)
 	default:
