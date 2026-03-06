@@ -173,6 +173,14 @@ func main() {
 		}
 	}
 
+	// Show model info on startup
+	if cfg.LLM.Model != "" {
+		fmt.Fprintf(os.Stderr, "LLM(model): %s\n", cfg.LLM.Model)
+	}
+	if cfg.HasLightLLM() {
+		fmt.Fprintf(os.Stderr, "Light LLM(provider=%s, model): %s\n", cfg.LightLLM.Provider, cfg.LightLLM.Model)
+	}
+
 	// Plan holder (shared between tools and agent)
 	planHolder := &tools.PlanHolder{}
 
