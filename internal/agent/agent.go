@@ -343,6 +343,11 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 				result = a.deduplicateFileRead(tc.Arguments, result, len(messages))
 			}
 
+			// Immediate compression of large tool results
+			if err == nil {
+				result = compressToolResult(tc.Name, result)
+			}
+
 			// Wrap external content to prevent prompt injection
 			if isExternalContentTool(tc.Name) {
 				result = wrapExternalContent(result)
@@ -579,9 +584,16 @@ func messagesCharCount(messages []llm.Message) int {
 	return total
 }
 
+// Graduated compression tiers based on message distance from the end.
+const (
+	tierRecentCount = 10 // messages kept intact
+	tierMidCount    = 10 // messages compressed to 3-sentence summary
+	// Messages older than tierRecentCount+tierMidCount are aggressively compressed to 1 sentence
+)
+
 // compressMessages shrinks the message list when it exceeds maxContextChars.
-// If a light LLM client is available, it generates summaries of old messages.
-// Otherwise, it falls back to simple truncation.
+// Uses graduated compression: recent messages are kept intact, mid-range messages
+// get moderate compression, and old messages get aggressive compression.
 func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 	total := messagesCharCount(messages)
 	if total <= a.maxContextChars {
@@ -590,16 +602,30 @@ func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 
 	a.log.Info("Context compression: %d chars exceeds %d limit, compressing old messages", total, a.maxContextChars)
 
-	// Keep first message (system) and last 10 messages intact
-	keepTail := 10
-	if keepTail >= len(messages) {
+	if len(messages) <= tierRecentCount+1 {
 		return messages
 	}
 
+	// Determine tier boundaries (indices into messages, skipping system at 0)
+	tail := len(messages)
+	recentStart := tail - tierRecentCount
+	if recentStart < 1 {
+		recentStart = 1
+	}
+	midStart := recentStart - tierMidCount
+	if midStart < 1 {
+		midStart = 1
+	}
+	// Old tier: messages[1..midStart), Mid tier: messages[midStart..recentStart), Recent: kept intact
+
 	if a.lightClient != nil {
-		a.compressWithLLM(messages, keepTail)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		a.compressTierWithLLM(ctx, messages, 1, midStart, 1)          // old: 1 sentence
+		a.compressTierWithLLM(ctx, messages, midStart, recentStart, 3) // mid: 3 sentences
 	} else {
-		a.compressByTextRank(messages, keepTail)
+		a.compressTierByTextRank(messages, 1, midStart, 1)          // old: 1 sentence
+		a.compressTierByTextRank(messages, midStart, recentStart, 3) // mid: 3 sentences
 	}
 
 	newTotal := messagesCharCount(messages)
@@ -607,39 +633,36 @@ func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 	return messages
 }
 
-// compressByTextRank uses TextRank extractive summarization to compress old messages.
-func (a *Agent) compressByTextRank(messages []llm.Message, keepTail int) {
-	for i := 1; i < len(messages)-keepTail; i++ {
+// compressTierByTextRank compresses messages in [start, end) using TextRank.
+func (a *Agent) compressTierByTextRank(messages []llm.Message, start, end, maxSentences int) {
+	for i := start; i < end; i++ {
 		m := &messages[i]
 		if m.Role == llm.RoleTool && len(m.Content) > 200 {
-			summary := nlp.ExtractSummary(m.Content, 3)
+			summary := nlp.ExtractSummary(m.Content, maxSentences)
 			m.Content = "[TextRank Summary] " + summary
 		}
 		if m.Role == llm.RoleAssistant && len(m.ToolCalls) == 0 && len(m.Content) > 500 {
-			summary := nlp.ExtractSummary(m.Content, 3)
+			summary := nlp.ExtractSummary(m.Content, maxSentences)
 			m.Content = "[TextRank Summary] " + summary
 		}
 	}
 }
 
-// compressWithLLM uses the light model to summarize old tool results and assistant messages.
-func (a *Agent) compressWithLLM(messages []llm.Message, keepTail int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	for i := 1; i < len(messages)-keepTail; i++ {
+// compressTierWithLLM compresses messages in [start, end) using the light model.
+func (a *Agent) compressTierWithLLM(ctx context.Context, messages []llm.Message, start, end, maxSentences int) {
+	prompt := fmt.Sprintf("You are a summarizer. Summarize the following content in %d sentence(s). Keep key information like file paths, function names, and error messages. Respond with only the summary, no preamble.", maxSentences)
+	for i := start; i < end; i++ {
 		m := &messages[i]
 		if m.Role == llm.RoleTool && len(m.Content) > 200 {
-			summary := a.summarize(ctx, m.Content)
+			summary := a.summarizeWith(ctx, m.Content, prompt)
 			if summary != "" {
 				m.Content = summary
 			} else {
-				original := len(m.Content)
-				m.Content = fmt.Sprintf("[Compressed: tool result was %d chars]", original)
+				m.Content = fmt.Sprintf("[Compressed: tool result was %d chars]", len(m.Content))
 			}
 		}
 		if m.Role == llm.RoleAssistant && len(m.ToolCalls) == 0 && len(m.Content) > 500 {
-			summary := a.summarize(ctx, m.Content)
+			summary := a.summarizeWith(ctx, m.Content, prompt)
 			if summary != "" {
 				m.Content = summary
 			} else {
@@ -649,13 +672,13 @@ func (a *Agent) compressWithLLM(messages []llm.Message, keepTail int) {
 	}
 }
 
-// summarize uses the light LLM to generate a concise summary of content.
-func (a *Agent) summarize(ctx context.Context, content string) string {
+// summarizeWith uses the light LLM to generate a summary with a custom system prompt.
+func (a *Agent) summarizeWith(ctx context.Context, content string, systemPrompt string) string {
 	if a.lightClient == nil {
 		return ""
 	}
 	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: "You are a summarizer. Summarize the following content in 1-2 sentences. Keep key information like file paths, function names, and error messages. Respond with only the summary, no preamble."},
+		{Role: llm.RoleSystem, Content: systemPrompt},
 		{Role: llm.RoleUser, Content: content},
 	}
 	resp, err := a.lightClient.Chat(ctx, msgs, nil)
@@ -664,6 +687,46 @@ func (a *Agent) summarize(ctx context.Context, content string) string {
 		return ""
 	}
 	return "[Summary] " + resp.Message.Content
+}
+
+// compressToolResult performs immediate compression of tool results based on tool type.
+// This reduces token consumption before the result enters the message history.
+func compressToolResult(toolName string, result string) string {
+	switch toolName {
+	case "execute_command":
+		return compressCommandResult(result)
+	case "web_fetch":
+		if len(result) > 3000 {
+			lines := strings.SplitN(result, "\n", -1)
+			if len(lines) > 60 {
+				// Keep first 20 and last 20 lines
+				kept := append(lines[:20], fmt.Sprintf("\n[... %d lines omitted ...]\n", len(lines)-40))
+				kept = append(kept, lines[len(lines)-20:]...)
+				return strings.Join(kept, "\n")
+			}
+		}
+	}
+	return result
+}
+
+// compressCommandResult compresses execute_command output.
+// On success with large output, keeps only head/tail. On failure, keeps error-relevant lines.
+func compressCommandResult(result string) string {
+	if len(result) <= 2000 {
+		return result
+	}
+
+	lines := strings.Split(result, "\n")
+	if len(lines) <= 40 {
+		return result
+	}
+
+	// Keep first 15 and last 15 lines
+	kept := make([]string, 0, 31)
+	kept = append(kept, lines[:15]...)
+	kept = append(kept, fmt.Sprintf("[... %d lines omitted ...]", len(lines)-30))
+	kept = append(kept, lines[len(lines)-15:]...)
+	return strings.Join(kept, "\n")
 }
 
 // compressToolCallArgs replaces large tool call arguments with a compact summary

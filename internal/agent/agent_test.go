@@ -544,6 +544,121 @@ func TestDeduplicateFileRead(t *testing.T) {
 	}
 }
 
+func TestCompressToolResult(t *testing.T) {
+	t.Run("execute_command small output unchanged", func(t *testing.T) {
+		result := "ok"
+		got := compressToolResult("execute_command", result)
+		if got != result {
+			t.Errorf("small output should be unchanged, got: %s", got)
+		}
+	})
+
+	t.Run("execute_command large output truncated", func(t *testing.T) {
+		var lines []string
+		for i := 0; i < 100; i++ {
+			lines = append(lines, fmt.Sprintf("line %d: some test output here", i))
+		}
+		result := strings.Join(lines, "\n")
+		got := compressToolResult("execute_command", result)
+		if len(got) >= len(result) {
+			t.Error("large command output should be compressed")
+		}
+		if !strings.Contains(got, "lines omitted") {
+			t.Error("expected omission marker in compressed output")
+		}
+		if !strings.Contains(got, "line 0") {
+			t.Error("expected first lines to be preserved")
+		}
+		if !strings.Contains(got, "line 99") {
+			t.Error("expected last lines to be preserved")
+		}
+	})
+
+	t.Run("web_fetch large output truncated", func(t *testing.T) {
+		var lines []string
+		for i := 0; i < 100; i++ {
+			lines = append(lines, fmt.Sprintf("paragraph %d: %s", i, strings.Repeat("text ", 20)))
+		}
+		result := strings.Join(lines, "\n")
+		got := compressToolResult("web_fetch", result)
+		if len(got) >= len(result) {
+			t.Error("large web_fetch output should be compressed")
+		}
+		if !strings.Contains(got, "lines omitted") {
+			t.Error("expected omission marker")
+		}
+	})
+
+	t.Run("read_file unchanged", func(t *testing.T) {
+		result := strings.Repeat("code line\n", 100)
+		got := compressToolResult("read_file", result)
+		if got != result {
+			t.Error("read_file should not be compressed by compressToolResult")
+		}
+	})
+}
+
+func TestGraduatedCompression(t *testing.T) {
+	store := newMockStore()
+
+	// Build 35 messages: system + 34 tool/assistant pairs to test tiered compression
+	// We need enough messages that some fall into old tier, mid tier, and recent tier
+	messages := []llm.Message{
+		{Role: llm.RoleSystem, Content: "system prompt"},
+	}
+	for i := 0; i < 30; i++ {
+		messages = append(messages, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: "",
+			ToolCalls: []llm.ToolCall{
+				{ID: fmt.Sprintf("call-%d", i), Name: "read_file"},
+			},
+		})
+		// Large tool result (>200 chars) to trigger compression
+		messages = append(messages, llm.Message{
+			Role:       llm.RoleTool,
+			Content:    fmt.Sprintf("File content block %d. %s. This is a long result that should be compressed. It contains multiple sentences. The code does something important. There are errors and warnings. Final line of output.", i, strings.Repeat("Additional padding text to exceed the threshold. ", 5)),
+			ToolCallID: fmt.Sprintf("call-%d", i),
+		})
+	}
+
+	ag := New(Config{
+		LLMClient:       &mockLLMClient{},
+		STM:             memai.NewSTM(memai.STMConfig{}),
+		LTM:             memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+		Store:           store,
+		Tools:           tools.NewRegistry(),
+		Embedder:        dummyEmbedder,
+		ContextDir:      "/tmp",
+		MaxContextChars: 500, // very low to force compression
+	})
+
+	compressed := ag.compressMessages(messages)
+
+	// Recent messages (last 10) should be untouched
+	recentStart := len(compressed) - tierRecentCount
+	for i := recentStart; i < len(compressed); i++ {
+		if strings.Contains(compressed[i].Content, "[TextRank Summary]") {
+			t.Errorf("recent message %d should not be compressed, content: %s", i, compressed[i].Content)
+		}
+	}
+
+	// Old messages (before mid tier) should be compressed
+	midStart := recentStart - tierMidCount
+	if midStart < 1 {
+		midStart = 1
+	}
+	oldCompressed := 0
+	for i := 1; i < midStart; i++ {
+		if strings.Contains(compressed[i].Content, "[TextRank Summary]") {
+			oldCompressed++
+		}
+	}
+	if oldCompressed == 0 && midStart > 1 {
+		t.Error("expected some old-tier messages to be compressed")
+	}
+}
+
 func TestMessagesCharCount(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: "hello"},
