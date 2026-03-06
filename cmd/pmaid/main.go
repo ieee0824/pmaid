@@ -47,6 +47,9 @@ func main() {
 		case "history":
 			runHistory(os.Args[2:], styles)
 			return
+		case "memory":
+			runMemory(os.Args[2:], styles)
+			return
 		case "usage":
 			runUsage(os.Args[2:], styles)
 			return
@@ -391,6 +394,90 @@ func runUsage(args []string, styles ui.Styles) {
 	fmt.Printf("%73s %10d %10d\n", "合計:", grandTotal, grandAvg)
 }
 
+func runMemory(args []string, styles ui.Styles) {
+	fs := flag.NewFlagSet("memory", flag.ExitOnError)
+	limit := fs.Int("n", 20, "Number of entries to show")
+	configPath := fs.String("config", "", "Config file path")
+	fs.Parse(args)
+
+	cfgPath := *configPath
+	if cfgPath == "" {
+		cfgPath = config.DefaultConfigPath()
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error loading config:"), err)
+		os.Exit(1)
+	}
+
+	memPath := cfg.ResolveMemoryPath()
+	store, err := memory.NewSQLiteStore(filepath.Join(memPath, "memories.db"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error opening memory store:"), err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	total, err := store.CountMemories(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error:"), err)
+		os.Exit(1)
+	}
+
+	searchQuery := fs.Arg(0)
+	var entries []memory.MemoryDetail
+	if searchQuery != "" {
+		entries, err = store.SearchMemories(ctx, searchQuery, *limit)
+	} else {
+		entries, err = store.ListMemories(ctx, *limit)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error:"), err)
+		os.Exit(1)
+	}
+
+	if len(entries) == 0 {
+		fmt.Println("メモリがありません。")
+		return
+	}
+
+	fmt.Printf("メモリ総数: %d件\n\n", total)
+
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		fmt.Printf("%s %s %s\n", styles.Info("───"), e.EventDate, styles.Info("───"))
+		fmt.Printf("  ID: %s\n", e.ID[:8])
+		if e.Boost != 0 {
+			fmt.Printf("  boost: %+.1f", e.Boost)
+			if e.EmotionalIntensity > 0 {
+				fmt.Printf("  emotion: %.2f", e.EmotionalIntensity)
+			}
+			fmt.Println()
+		} else if e.EmotionalIntensity > 0 {
+			fmt.Printf("  emotion: %.2f\n", e.EmotionalIntensity)
+		}
+		// Show content summary
+		content := e.Content
+		parts := strings.SplitN(content, "\nAssistant: ", 2)
+		if len(parts) == 2 {
+			userMsg := strings.TrimPrefix(parts[0], "User: ")
+			fmt.Printf("  %s   %s\n", styles.PromptMe("you>"), truncateStr(userMsg, 100))
+			fmt.Printf("  %s %s\n", styles.PromptAI("pmaid>"), truncateStr(parts[1], 150))
+		} else {
+			fmt.Printf("  %s\n", truncateStr(content, 200))
+		}
+		fmt.Println()
+	}
+
+	if searchQuery != "" {
+		fmt.Printf("(%d件表示, 検索: %q)\n", len(entries), searchQuery)
+	} else {
+		fmt.Printf("(%d件表示 / %d件中)\n", len(entries), total)
+	}
+}
+
 func runHistory(args []string, styles ui.Styles) {
 	fs := flag.NewFlagSet("history", flag.ExitOnError)
 	limit := fs.Int("n", 20, "Number of entries to show")
@@ -458,7 +545,7 @@ func printBashCompletion() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="history usage version completion"
+    commands="history memory usage version completion"
     flags="-q -context -model -config"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
@@ -473,7 +560,7 @@ func printBashCompletion() {
         -model)
             COMPREPLY=()
             ;;
-        history|usage)
+        history|memory|usage)
             COMPREPLY=( $(compgen -W "-n -config" -- "${cur}") )
             ;;
         *)

@@ -237,6 +237,75 @@ type TokenUsageDailySummary struct {
 	TotalTokens      int
 }
 
+// MemoryDetail is a full view of a memory for the memory subcommand.
+type MemoryDetail struct {
+	ID                 string
+	Content            string
+	EventDate          string
+	ThreadKey          string
+	Boost              float64
+	EmotionalIntensity float64
+}
+
+// ListMemories returns the most recent n memories with metadata.
+func (s *SQLiteStore) ListMemories(ctx context.Context, limit int) ([]MemoryDetail, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, content, event_date, thread_key, boost, emotional_intensity
+		FROM memories
+		ORDER BY rowid DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list memories: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []MemoryDetail
+	for rows.Next() {
+		var e MemoryDetail
+		if err := rows.Scan(&e.ID, &e.Content, &e.EventDate, &e.ThreadKey, &e.Boost, &e.EmotionalIntensity); err != nil {
+			return nil, fmt.Errorf("scan memory detail: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// SearchMemories returns memories whose content contains the query string, with metadata.
+func (s *SQLiteStore) SearchMemories(ctx context.Context, query string, limit int) ([]MemoryDetail, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, content, event_date, thread_key, boost, emotional_intensity
+		FROM memories
+		WHERE content LIKE '%' || ? || '%'
+		ORDER BY rowid DESC
+		LIMIT ?
+	`, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search memories: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []MemoryDetail
+	for rows.Next() {
+		var e MemoryDetail
+		if err := rows.Scan(&e.ID, &e.Content, &e.EventDate, &e.ThreadKey, &e.Boost, &e.EmotionalIntensity); err != nil {
+			return nil, fmt.Errorf("scan memory detail: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// CountMemories returns the total number of memories.
+func (s *SQLiteStore) CountMemories(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count memories: %w", err)
+	}
+	return count, nil
+}
+
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
