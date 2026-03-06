@@ -402,7 +402,7 @@ func (a *Agent) needsConfirmation(name string, args string) bool {
 		return false
 	}
 	switch name {
-	case "write_file", "execute_command":
+	case "write_file", "execute_command", "web_fetch":
 		return true
 	case "read_file":
 		var parsed struct {
@@ -426,10 +426,13 @@ func toolConfirmMessage(name, args string) string {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 		Command string `json:"command"`
+		URL     string `json:"url"`
 	}
 	json.Unmarshal([]byte(args), &parsed)
 
 	switch name {
+	case "web_fetch":
+		return fmt.Sprintf("Webページを取得します: %s", parsed.URL)
 	case "read_file":
 		return fmt.Sprintf("機密情報を含む可能性のあるファイルを読み込みます: %s", parsed.Path)
 	case "write_file":
@@ -488,10 +491,16 @@ func toolStatusMessage(name, args string) string {
 		Path    string `json:"path"`
 		Command string `json:"command"`
 		Title   string `json:"title"`
+		URL     string `json:"url"`
 	}
 	json.Unmarshal([]byte(args), &parsed)
 
 	switch name {
+	case "web_fetch":
+		if parsed.URL != "" {
+			return fmt.Sprintf("取得中: %s", parsed.URL)
+		}
+		return "Webページ取得中..."
 	case "read_file":
 		if parsed.Path != "" {
 			return fmt.Sprintf("読み込み中: %s", parsed.Path)
@@ -674,6 +683,7 @@ You help users with software engineering tasks including writing code, debugging
 - When asked to modify files, use the write_file tool
 - When asked to read files, use the read_file tool
 - When asked to run commands, use the execute_command tool
+- When asked to fetch web pages or URLs, use the web_fetch tool
 - Always explain what you're doing before using tools
 
 ## Planning

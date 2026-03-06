@@ -9,6 +9,7 @@ require (
 	github.com/ieee0824/memAI-go v1.2.0
 	github.com/mattn/go-isatty v0.0.20
 	github.com/openai/openai-go/v3 v3.0.0
+	golang.org/x/net v0.34.0
 	modernc.org/sqlite v1.34.4
 )
 

@@ -192,6 +192,7 @@ func main() {
 		tools.NewFileRead(absContext),
 		tools.NewFileWrite(absContext),
 		tools.NewExec(absContext),
+		tools.NewWebFetch(),
 		tools.NewCreatePlan(planHolder),
 		tools.NewUpdatePlanStep(planHolder),
 		tools.NewShowPlan(planHolder),
