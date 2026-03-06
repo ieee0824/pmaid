@@ -369,17 +369,26 @@ func runUsage(args []string, styles ui.Styles) {
 		return
 	}
 
-	fmt.Printf("%-12s %-10s %-20s %6s %10s %10s %10s\n",
-		"Date", "Version", "Model", "Turns", "Prompt", "Completion", "Total")
-	fmt.Println(strings.Repeat("─", 84))
-	var grandTotal int
+	fmt.Printf("%-12s %-10s %-20s %6s %10s %10s %10s %10s\n",
+		"Date", "Version", "Model", "Turns", "Prompt", "Completion", "Total", "Avg/Turn")
+	fmt.Println(strings.Repeat("─", 95))
+	var grandTotal, grandTurns int
 	for _, s := range summaries {
-		fmt.Printf("%-12s %-10s %-20s %6d %10d %10d %10d\n",
-			s.Date, s.Version, s.Model, s.Turns, s.PromptTokens, s.CompletionTokens, s.TotalTokens)
+		avg := 0
+		if s.Turns > 0 {
+			avg = s.TotalTokens / s.Turns
+		}
+		fmt.Printf("%-12s %-10s %-20s %6d %10d %10d %10d %10d\n",
+			s.Date, s.Version, s.Model, s.Turns, s.PromptTokens, s.CompletionTokens, s.TotalTokens, avg)
 		grandTotal += s.TotalTokens
+		grandTurns += s.Turns
 	}
-	fmt.Println(strings.Repeat("─", 84))
-	fmt.Printf("%62s %10d\n", "合計:", grandTotal)
+	fmt.Println(strings.Repeat("─", 95))
+	grandAvg := 0
+	if grandTurns > 0 {
+		grandAvg = grandTotal / grandTurns
+	}
+	fmt.Printf("%73s %10d %10d\n", "合計:", grandTotal, grandAvg)
 }
 
 func runHistory(args []string, styles ui.Styles) {
