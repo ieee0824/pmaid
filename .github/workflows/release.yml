@@ -151,10 +151,11 @@ jobs:
           sed -i 's/^          //' pmaid.rb
 
           git clone git@github.com-tap:ieee0824/homebrew-tap.git
-          cp pmaid.rb homebrew-tap/pmaid.rb
           cd homebrew-tap
+          mkdir -p Formula
+          cp ../pmaid.rb Formula/pmaid.rb
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pmaid.rb
+          git add Formula/pmaid.rb
           git commit -m "Update pmaid to ${VERSION}"
           git push
