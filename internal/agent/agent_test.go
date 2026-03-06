@@ -694,6 +694,86 @@ func TestStructuredContextWindow(t *testing.T) {
 		}
 	})
 
+	t.Run("does not orphan tool messages from tool_calls", func(t *testing.T) {
+		ag := New(Config{
+			LLMClient:       &mockLLMClient{},
+			STM:             memai.NewSTM(memai.STMConfig{}),
+			LTM:             memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+			Store:           store,
+			Tools:           tools.NewRegistry(),
+			Embedder:        dummyEmbedder,
+			ContextDir:      "/tmp",
+			MaxContextChars: 500,
+		})
+
+		// Build messages where the split point would land on a tool message.
+		// Structure: system + many user/assistant pairs + assistant(tool_calls) + tool responses + a few recent messages
+		messages := []llm.Message{
+			{Role: llm.RoleSystem, Content: "system prompt"},
+		}
+		// Add enough messages so that compression is triggered and the naive split lands on tool messages
+		for i := 0; i < 8; i++ {
+			messages = append(messages, llm.Message{
+				Role:    llm.RoleUser,
+				Content: fmt.Sprintf("Question %d. %s", i, strings.Repeat("padding ", 20)),
+			})
+			messages = append(messages, llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: fmt.Sprintf("Answer %d. %s", i, strings.Repeat("padding ", 20)),
+			})
+		}
+		// Assistant message with tool_calls
+		messages = append(messages, llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: "",
+			ToolCalls: []llm.ToolCall{
+				{ID: "call_1", Name: "read_file", Arguments: `{"path":"test.go"}`},
+			},
+		})
+		// Tool response
+		messages = append(messages, llm.Message{
+			Role:       llm.RoleTool,
+			Content:    "file contents here",
+			ToolCallID: "call_1",
+		})
+		// A few more recent messages
+		for i := 0; i < 3; i++ {
+			messages = append(messages, llm.Message{
+				Role:    llm.RoleUser,
+				Content: fmt.Sprintf("Follow-up %d", i),
+			})
+			messages = append(messages, llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: fmt.Sprintf("Response %d", i),
+			})
+		}
+
+		compressed := ag.compressMessages(messages)
+
+		// Verify no tool message appears without a preceding assistant message with tool_calls
+		for i, m := range compressed {
+			if m.Role == llm.RoleTool {
+				if i == 0 {
+					t.Fatal("tool message at index 0 has no preceding message")
+				}
+				// Walk backward to find the assistant message with tool_calls
+				found := false
+				for j := i - 1; j >= 0; j-- {
+					if compressed[j].Role == llm.RoleTool {
+						continue // another tool response for the same call
+					}
+					if compressed[j].Role == llm.RoleAssistant && len(compressed[j].ToolCalls) > 0 {
+						found = true
+					}
+					break
+				}
+				if !found {
+					t.Errorf("tool message at index %d is orphaned (no preceding assistant with tool_calls)", i)
+				}
+			}
+		}
+	})
+
 	t.Run("no compression below threshold", func(t *testing.T) {
 		ag := New(Config{
 			LLMClient:       &mockLLMClient{},

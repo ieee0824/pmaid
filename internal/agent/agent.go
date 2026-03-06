@@ -458,6 +458,11 @@ func toolConfirmMessage(name, args string) string {
 		Content string `json:"content"`
 		Command string `json:"command"`
 		URL     string `json:"url"`
+		Patches []struct {
+			StartLine int    `json:"start_line"`
+			EndLine   int    `json:"end_line"`
+			Content   string `json:"content"`
+		} `json:"patches"`
 	}
 	json.Unmarshal([]byte(args), &parsed)
 
@@ -470,7 +475,18 @@ func toolConfirmMessage(name, args string) string {
 		msg := fmt.Sprintf("ファイルを書き込みます: %s\n--- 内容 ---\n%s\n--- 内容終わり ---", parsed.Path, parsed.Content)
 		return msg
 	case "edit_file":
-		return fmt.Sprintf("ファイルを編集します: %s", parsed.Path)
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("ファイルを編集します: %s\n", parsed.Path))
+		for i, p := range parsed.Patches {
+			if len(parsed.Patches) > 1 {
+				sb.WriteString(fmt.Sprintf("--- patch %d (L%d-L%d) ---\n", i+1, p.StartLine, p.EndLine))
+			} else {
+				sb.WriteString(fmt.Sprintf("--- patch (L%d-L%d) ---\n", p.StartLine, p.EndLine))
+			}
+			sb.WriteString(p.Content)
+			sb.WriteString("\n--- patch終わり ---\n")
+		}
+		return sb.String()
 	case "execute_command":
 		return fmt.Sprintf("コマンドを実行します: %s", parsed.Command)
 	default:
@@ -618,6 +634,11 @@ func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 	collapseEnd := len(messages) - recentWindowSize
 	if collapseEnd < 1 {
 		collapseEnd = 1
+	}
+	// Adjust split point so we don't orphan tool messages from their assistant tool_calls.
+	// Move collapseEnd backward until it doesn't land on a tool message.
+	for collapseEnd > 1 && messages[collapseEnd].Role == llm.RoleTool {
+		collapseEnd--
 	}
 	toCollapse := messages[1:collapseEnd]
 	recentMessages := messages[collapseEnd:]
