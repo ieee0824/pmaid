@@ -147,6 +147,67 @@ CLIフラグ > 環境変数 > 設定ファイル > デフォルト値
 
 ## Architecture
 
+```mermaid
+graph TB
+    User([User]) -->|入力| CLI
+
+    subgraph "cmd/pmaid"
+        CLI[main.go<br/>CLI / サブコマンド]
+    end
+
+    CLI -->|対話ループ| Agent
+    CLI -->|history / usage / memory| Store
+
+    subgraph "internal/agent"
+        Agent[Agent<br/>コアループ]
+        Agent -->|コンテキスト圧縮| Compress[構造化コンテキスト<br/>ウィンドウ]
+    end
+
+    Agent -->|推論| LLM
+    Agent -->|ツール呼び出し| Tools
+    Agent -->|記憶検索・保存| MemAI
+
+    subgraph "internal/llm"
+        LLM{LLMインターフェース}
+        LLM --> OpenAI[OpenAI<br/>gpt-4o等]
+        LLM --> Google[Google AI<br/>Gemini等]
+        LLM --> Local[Local<br/>Ollama等]
+    end
+
+    subgraph "internal/tools"
+        Tools{Tool Registry}
+        Tools --> FileRead[read_file]
+        Tools --> FileWrite[write_file]
+        Tools --> FileEdit[edit_file]
+        Tools --> Exec[execute_command]
+        Tools --> WebFetch[web_fetch]
+        Tools --> Plan[create_plan /<br/>update_plan_step]
+    end
+
+    subgraph "internal/memory"
+        MemAI[memAI-go<br/>STM + LTM]
+        MemAI --> Embedding[TF-IDF<br/>Embedding]
+        MemAI --> Store[(SQLite)]
+    end
+
+    Compress -->|要約生成| LLM
+    Compress -->|TextRank抽出| NLP[internal/nlp]
+
+    subgraph "支援モジュール"
+        Config[config<br/>TOML設定]
+        Skills[skills<br/>テンプレート]
+        Logger[logger<br/>日別ログ]
+        UI[ui<br/>カラー出力]
+    end
+
+    CLI --> Config
+    Agent --> Skills
+    Agent --> Logger
+    Agent --> UI
+```
+
+### ディレクトリ構成
+
 ```
 cmd/pmaid/main.go              # CLIエントリポイント
 internal/
