@@ -43,9 +43,9 @@ func (f *FileWrite) Execute(_ interface{}, args string) (string, error) {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
 
-	path := params.Path
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(f.baseDir, path)
+	path, err := safePath(f.baseDir, params.Path)
+	if err != nil {
+		return "", err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {

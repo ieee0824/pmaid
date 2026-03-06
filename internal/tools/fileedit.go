@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -75,9 +74,9 @@ func (f *FileEdit) Execute(_ interface{}, args string) (string, error) {
 		return "", fmt.Errorf("no patches provided")
 	}
 
-	path := params.Path
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(f.baseDir, path)
+	path, err := safePath(f.baseDir, params.Path)
+	if err != nil {
+		return "", err
 	}
 
 	data, err := os.ReadFile(path)

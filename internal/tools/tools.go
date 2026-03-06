@@ -1,8 +1,62 @@
 package tools
 
 import (
+	"fmt"
+	"path/filepath"
+	"strings"
+
 	"github.com/ieee0824/pmaid/internal/llm"
 )
+
+// safePath resolves and validates that the given path stays within baseDir.
+// It prevents path traversal attacks using "..", absolute paths, and symlinks.
+func safePath(baseDir, path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(baseDir, path)
+	}
+	path = filepath.Clean(path)
+
+	// If the file itself exists, resolve it fully
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// File doesn't exist yet — walk up to find the nearest existing ancestor
+		resolved = resolveWithAncestor(path)
+	}
+
+	absBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		absBase = filepath.Clean(baseDir)
+	}
+
+	if !strings.HasPrefix(resolved, absBase+string(filepath.Separator)) && resolved != absBase {
+		return "", fmt.Errorf("path %q is outside allowed directory %q", path, baseDir)
+	}
+	return path, nil
+}
+
+// resolveWithAncestor walks up from path until it finds an existing directory,
+// resolves symlinks on that ancestor, then re-appends the remaining segments.
+func resolveWithAncestor(path string) string {
+	parts := []string{filepath.Base(path)}
+	dir := filepath.Dir(path)
+	for {
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			// Found an existing ancestor — rejoin remaining parts
+			for i := len(parts) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, parts[i])
+			}
+			return resolved
+		}
+		parts = append(parts, filepath.Base(dir))
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return path
+}
 
 type Tool interface {
 	Name() string
