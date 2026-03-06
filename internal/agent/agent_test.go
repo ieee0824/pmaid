@@ -371,21 +371,22 @@ func TestAgent_ContextCompression(t *testing.T) {
 		t.Errorf("result = %q", result)
 	}
 
-	// Verify compression happened: later LLM calls should have compressed tool results
+	// Verify compression happened: later LLM calls should have conversation summary
 	if mock.callCount < 10 {
 		t.Errorf("expected many LLM calls, got %d", mock.callCount)
 	}
 
-	// Check that some tool results in earlier calls were compressed
+	// Check that a conversation summary message was inserted
 	lastMsgs := mock.messages[mock.callCount-1]
-	compressedCount := 0
+	hasSummary := false
 	for _, m := range lastMsgs {
-		if m.Role == llm.RoleTool && (strings.Contains(m.Content, "[TextRank Summary]") || strings.Contains(m.Content, "[Summary]")) {
-			compressedCount++
+		if m.Role == llm.RoleSystem && strings.Contains(m.Content, "Conversation Summary") {
+			hasSummary = true
+			break
 		}
 	}
-	if compressedCount == 0 {
-		t.Error("expected some tool results to be compressed")
+	if !hasSummary {
+		t.Error("expected a Conversation Summary message after compression")
 	}
 }
 
@@ -599,65 +600,129 @@ func TestCompressToolResult(t *testing.T) {
 	})
 }
 
-func TestGraduatedCompression(t *testing.T) {
+func TestStructuredContextWindow(t *testing.T) {
 	store := newMockStore()
 
-	// Build 35 messages: system + 34 tool/assistant pairs to test tiered compression
-	// We need enough messages that some fall into old tier, mid tier, and recent tier
-	messages := []llm.Message{
-		{Role: llm.RoleSystem, Content: "system prompt"},
-	}
-	for i := 0; i < 30; i++ {
-		messages = append(messages, llm.Message{
-			Role:    llm.RoleAssistant,
-			Content: "",
-			ToolCalls: []llm.ToolCall{
-				{ID: fmt.Sprintf("call-%d", i), Name: "read_file"},
-			},
-		})
-		// Large tool result (>200 chars) to trigger compression
-		messages = append(messages, llm.Message{
-			Role:       llm.RoleTool,
-			Content:    fmt.Sprintf("File content block %d. %s. This is a long result that should be compressed. It contains multiple sentences. The code does something important. There are errors and warnings. Final line of output.", i, strings.Repeat("Additional padding text to exceed the threshold. ", 5)),
-			ToolCallID: fmt.Sprintf("call-%d", i),
-		})
-	}
+	t.Run("collapses old messages into summary", func(t *testing.T) {
+		// Build 25 messages: system + 24 others
+		messages := []llm.Message{
+			{Role: llm.RoleSystem, Content: "system prompt"},
+		}
+		for i := 0; i < 12; i++ {
+			messages = append(messages, llm.Message{
+				Role:    llm.RoleUser,
+				Content: fmt.Sprintf("Question %d about the code", i),
+			})
+			messages = append(messages, llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: fmt.Sprintf("Answer %d with details about the implementation. %s", i, strings.Repeat("padding ", 30)),
+			})
+		}
 
-	ag := New(Config{
-		LLMClient:       &mockLLMClient{},
-		STM:             memai.NewSTM(memai.STMConfig{}),
-		LTM:             memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
-		Store:           store,
-		Tools:           tools.NewRegistry(),
-		Embedder:        dummyEmbedder,
-		ContextDir:      "/tmp",
-		MaxContextChars: 500, // very low to force compression
+		ag := New(Config{
+			LLMClient:       &mockLLMClient{},
+			STM:             memai.NewSTM(memai.STMConfig{}),
+			LTM:             memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+			Store:           store,
+			Tools:           tools.NewRegistry(),
+			Embedder:        dummyEmbedder,
+			ContextDir:      "/tmp",
+			MaxContextChars: 500, // very low to force compression
+		})
+
+		compressed := ag.compressMessages(messages)
+
+		// Result should be: system + summary + recent window
+		if len(compressed) > recentWindowSize+2 {
+			t.Errorf("expected at most %d messages (system+summary+recent), got %d", recentWindowSize+2, len(compressed))
+		}
+
+		// First message should be system prompt
+		if compressed[0].Role != llm.RoleSystem || compressed[0].Content != "system prompt" {
+			t.Error("first message should be original system prompt")
+		}
+
+		// Second message should be conversation summary
+		if compressed[1].Role != llm.RoleSystem || !strings.Contains(compressed[1].Content, "Conversation Summary") {
+			t.Errorf("second message should be conversation summary, got: %s", compressed[1].Content[:min(100, len(compressed[1].Content))])
+		}
+
+		// Agent should have accumulated summary
+		if ag.conversationSummary == "" {
+			t.Error("agent conversationSummary should be populated")
+		}
+
+		// Recent messages should be intact (last few from original)
+		lastOriginal := messages[len(messages)-1].Content
+		lastCompressed := compressed[len(compressed)-1].Content
+		if lastOriginal != lastCompressed {
+			t.Error("last message should be unchanged")
+		}
 	})
 
-	compressed := ag.compressMessages(messages)
+	t.Run("accumulates summary across compressions", func(t *testing.T) {
+		ag := New(Config{
+			LLMClient:       &mockLLMClient{},
+			STM:             memai.NewSTM(memai.STMConfig{}),
+			LTM:             memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+			Store:           store,
+			Tools:           tools.NewRegistry(),
+			Embedder:        dummyEmbedder,
+			ContextDir:      "/tmp",
+			MaxContextChars: 500,
+		})
 
-	// Recent messages (last 10) should be untouched
-	recentStart := len(compressed) - tierRecentCount
-	for i := recentStart; i < len(compressed); i++ {
-		if strings.Contains(compressed[i].Content, "[TextRank Summary]") {
-			t.Errorf("recent message %d should not be compressed, content: %s", i, compressed[i].Content)
+		// First compression
+		msgs1 := []llm.Message{{Role: llm.RoleSystem, Content: "sys"}}
+		for i := 0; i < 15; i++ {
+			msgs1 = append(msgs1, llm.Message{Role: llm.RoleUser, Content: fmt.Sprintf("First batch msg %d. %s", i, strings.Repeat("pad ", 20))})
 		}
-	}
+		ag.compressMessages(msgs1)
+		summary1 := ag.conversationSummary
 
-	// Old messages (before mid tier) should be compressed
-	midStart := recentStart - tierMidCount
-	if midStart < 1 {
-		midStart = 1
-	}
-	oldCompressed := 0
-	for i := 1; i < midStart; i++ {
-		if strings.Contains(compressed[i].Content, "[TextRank Summary]") {
-			oldCompressed++
+		// Second compression with new messages
+		msgs2 := []llm.Message{{Role: llm.RoleSystem, Content: "sys"}}
+		for i := 0; i < 15; i++ {
+			msgs2 = append(msgs2, llm.Message{Role: llm.RoleUser, Content: fmt.Sprintf("Second batch msg %d. %s", i, strings.Repeat("pad ", 20))})
 		}
+		ag.compressMessages(msgs2)
+		summary2 := ag.conversationSummary
+
+		// Second summary should be longer (accumulated)
+		if len(summary2) <= len(summary1) {
+			t.Errorf("accumulated summary should grow: first=%d, second=%d", len(summary1), len(summary2))
+		}
+	})
+
+	t.Run("no compression below threshold", func(t *testing.T) {
+		ag := New(Config{
+			LLMClient:       &mockLLMClient{},
+			STM:             memai.NewSTM(memai.STMConfig{}),
+			LTM:             memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+			Store:           store,
+			Tools:           tools.NewRegistry(),
+			Embedder:        dummyEmbedder,
+			ContextDir:      "/tmp",
+			MaxContextChars: 100000,
+		})
+
+		messages := []llm.Message{
+			{Role: llm.RoleSystem, Content: "sys"},
+			{Role: llm.RoleUser, Content: "hello"},
+			{Role: llm.RoleAssistant, Content: "hi"},
+		}
+		result := ag.compressMessages(messages)
+		if len(result) != len(messages) {
+			t.Error("messages below threshold should not be compressed")
+		}
+	})
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	if oldCompressed == 0 && midStart > 1 {
-		t.Error("expected some old-tier messages to be compressed")
-	}
+	return b
 }
 
 func TestFilteredToolDefs(t *testing.T) {

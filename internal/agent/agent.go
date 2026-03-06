@@ -52,9 +52,10 @@ type Agent struct {
 	model             string
 	skillsContext     string
 	log               *logger.Logger
-	maxToolIterations int
-	maxContextChars   int
-	fileCache         map[string]fileCacheEntry // path -> cache entry for read dedup
+	maxToolIterations   int
+	maxContextChars     int
+	fileCache           map[string]fileCacheEntry // path -> cache entry for read dedup
+	conversationSummary string                    // accumulated summary of collapsed old messages
 }
 
 type fileCacheEntry struct {
@@ -593,92 +594,172 @@ func messagesCharCount(messages []llm.Message) int {
 	return total
 }
 
-// Graduated compression tiers based on message distance from the end.
-const (
-	tierRecentCount = 10 // messages kept intact
-	tierMidCount    = 10 // messages compressed to 3-sentence summary
-	// Messages older than tierRecentCount+tierMidCount are aggressively compressed to 1 sentence
-)
+// recentWindowSize is the number of recent messages kept intact in the structured context window.
+const recentWindowSize = 10
 
-// compressMessages shrinks the message list when it exceeds maxContextChars.
-// Uses graduated compression: recent messages are kept intact, mid-range messages
-// get moderate compression, and old messages get aggressive compression.
+// compressMessages implements a structured context window.
+// Instead of keeping all messages and compressing them individually, old messages
+// beyond the recent window are collapsed into a single conversationSummary.
+// The resulting structure is: [System Prompt] [Conversation Summary] [Recent Messages]
 func (a *Agent) compressMessages(messages []llm.Message) []llm.Message {
 	total := messagesCharCount(messages)
 	if total <= a.maxContextChars {
 		return messages
 	}
 
-	a.log.Info("Context compression: %d chars exceeds %d limit, compressing old messages", total, a.maxContextChars)
+	a.log.Info("Structured context compression: %d chars exceeds %d limit", total, a.maxContextChars)
 
-	if len(messages) <= tierRecentCount+1 {
+	// Need at least system + some messages beyond the recent window
+	if len(messages) <= recentWindowSize+1 {
 		return messages
 	}
 
-	// Determine tier boundaries (indices into messages, skipping system at 0)
-	tail := len(messages)
-	recentStart := tail - tierRecentCount
-	if recentStart < 1 {
-		recentStart = 1
+	// Split: messages[0] = system, messages[1..collapseEnd) = to collapse, messages[collapseEnd..] = recent
+	collapseEnd := len(messages) - recentWindowSize
+	if collapseEnd < 1 {
+		collapseEnd = 1
 	}
-	midStart := recentStart - tierMidCount
-	if midStart < 1 {
-		midStart = 1
+	toCollapse := messages[1:collapseEnd]
+	recentMessages := messages[collapseEnd:]
+
+	if len(toCollapse) == 0 {
+		return messages
 	}
-	// Old tier: messages[1..midStart), Mid tier: messages[midStart..recentStart), Recent: kept intact
+
+	// Build text representation of messages to collapse
+	newSummary := a.collapseMessages(toCollapse)
+
+	// Merge with existing conversation summary
+	if a.conversationSummary != "" {
+		a.conversationSummary = a.conversationSummary + "\n" + newSummary
+	} else {
+		a.conversationSummary = newSummary
+	}
+
+	// Compress the accumulated summary if it's getting too long
+	a.conversationSummary = a.compressSummary(a.conversationSummary)
+
+	// Rebuild message list: [system] [summary] [recent]
+	result := make([]llm.Message, 0, 2+len(recentMessages))
+	result = append(result, messages[0]) // system prompt
+	result = append(result, llm.Message{
+		Role:    llm.RoleSystem,
+		Content: "## Conversation Summary (previous context)\n" + a.conversationSummary,
+	})
+	result = append(result, recentMessages...)
+
+	newTotal := messagesCharCount(result)
+	a.log.Info("Structured context compression done: %d -> %d chars, collapsed %d messages", total, newTotal, len(toCollapse))
+	return result
+}
+
+// collapseMessages converts a slice of messages into a compact text summary.
+func (a *Agent) collapseMessages(messages []llm.Message) string {
+	if a.lightClient != nil {
+		return a.collapseMessagesWithLLM(messages)
+	}
+	return a.collapseMessagesWithTextRank(messages)
+}
+
+// collapseMessagesWithTextRank extracts key sentences from messages using TextRank.
+func (a *Agent) collapseMessagesWithTextRank(messages []llm.Message) string {
+	var parts []string
+	for _, m := range messages {
+		switch m.Role {
+		case llm.RoleUser:
+			parts = append(parts, "User: "+truncate(m.Content, 200))
+		case llm.RoleAssistant:
+			if len(m.ToolCalls) > 0 {
+				for _, tc := range m.ToolCalls {
+					parts = append(parts, fmt.Sprintf("Tool call: %s", tc.Name))
+				}
+			} else {
+				summary := nlp.ExtractSummary(m.Content, 1)
+				if summary != "" {
+					parts = append(parts, "Assistant: "+summary)
+				}
+			}
+		case llm.RoleTool:
+			if len(m.Content) > 200 {
+				summary := nlp.ExtractSummary(m.Content, 1)
+				if summary != "" {
+					parts = append(parts, "Tool result: "+summary)
+				} else {
+					parts = append(parts, fmt.Sprintf("Tool result: [%d chars]", len(m.Content)))
+				}
+			} else {
+				parts = append(parts, "Tool result: "+m.Content)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// collapseMessagesWithLLM uses the light model to summarize collapsed messages.
+func (a *Agent) collapseMessagesWithLLM(messages []llm.Message) string {
+	// Build a text representation for the LLM to summarize
+	var sb strings.Builder
+	for _, m := range messages {
+		switch m.Role {
+		case llm.RoleUser:
+			sb.WriteString("User: " + truncate(m.Content, 500) + "\n")
+		case llm.RoleAssistant:
+			if len(m.ToolCalls) > 0 {
+				for _, tc := range m.ToolCalls {
+					sb.WriteString(fmt.Sprintf("Assistant called tool: %s\n", tc.Name))
+				}
+			} else {
+				sb.WriteString("Assistant: " + truncate(m.Content, 500) + "\n")
+			}
+		case llm.RoleTool:
+			sb.WriteString("Tool result: " + truncate(m.Content, 300) + "\n")
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	summary := a.summarizeWith(ctx, sb.String(),
+		"You are a conversation summarizer. Summarize the following conversation excerpt into a concise paragraph. "+
+			"Preserve key information: file paths, function names, error messages, decisions made, and actions taken. "+
+			"Focus on WHAT was done and WHY, not HOW. Respond with only the summary, no preamble.")
+	if summary != "" {
+		return summary
+	}
+	// Fallback to TextRank if LLM fails
+	return a.collapseMessagesWithTextRank(messages)
+}
+
+// compressSummary keeps the accumulated conversation summary under a size limit.
+const maxSummaryChars = 3000
+
+func (a *Agent) compressSummary(summary string) string {
+	if len(summary) <= maxSummaryChars {
+		return summary
+	}
+
+	a.log.Info("Compressing accumulated summary: %d chars > %d limit", len(summary), maxSummaryChars)
 
 	if a.lightClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		a.compressTierWithLLM(ctx, messages, 1, midStart, 1)          // old: 1 sentence
-		a.compressTierWithLLM(ctx, messages, midStart, recentStart, 3) // mid: 3 sentences
-	} else {
-		a.compressTierByTextRank(messages, 1, midStart, 1)          // old: 1 sentence
-		a.compressTierByTextRank(messages, midStart, recentStart, 3) // mid: 3 sentences
-	}
-
-	newTotal := messagesCharCount(messages)
-	a.log.Info("Context compression done: %d -> %d chars", total, newTotal)
-	return messages
-}
-
-// compressTierByTextRank compresses messages in [start, end) using TextRank.
-func (a *Agent) compressTierByTextRank(messages []llm.Message, start, end, maxSentences int) {
-	for i := start; i < end; i++ {
-		m := &messages[i]
-		if m.Role == llm.RoleTool && len(m.Content) > 200 {
-			summary := nlp.ExtractSummary(m.Content, maxSentences)
-			m.Content = "[TextRank Summary] " + summary
-		}
-		if m.Role == llm.RoleAssistant && len(m.ToolCalls) == 0 && len(m.Content) > 500 {
-			summary := nlp.ExtractSummary(m.Content, maxSentences)
-			m.Content = "[TextRank Summary] " + summary
+		compressed := a.summarizeWith(ctx, summary,
+			"You are a conversation summarizer. Compress the following conversation summary into a shorter version (about 5 sentences). "+
+				"Keep the most important information: current task, files modified, key decisions, and recent actions. "+
+				"Respond with only the compressed summary, no preamble.")
+		if compressed != "" {
+			return compressed
 		}
 	}
-}
 
-// compressTierWithLLM compresses messages in [start, end) using the light model.
-func (a *Agent) compressTierWithLLM(ctx context.Context, messages []llm.Message, start, end, maxSentences int) {
-	prompt := fmt.Sprintf("You are a summarizer. Summarize the following content in %d sentence(s). Keep key information like file paths, function names, and error messages. Respond with only the summary, no preamble.", maxSentences)
-	for i := start; i < end; i++ {
-		m := &messages[i]
-		if m.Role == llm.RoleTool && len(m.Content) > 200 {
-			summary := a.summarizeWith(ctx, m.Content, prompt)
-			if summary != "" {
-				m.Content = summary
-			} else {
-				m.Content = fmt.Sprintf("[Compressed: tool result was %d chars]", len(m.Content))
-			}
-		}
-		if m.Role == llm.RoleAssistant && len(m.ToolCalls) == 0 && len(m.Content) > 500 {
-			summary := a.summarizeWith(ctx, m.Content, prompt)
-			if summary != "" {
-				m.Content = summary
-			} else {
-				m.Content = truncate(m.Content, 200) + fmt.Sprintf(" [truncated from %d chars]", len(m.Content))
-			}
-		}
+	// Fallback: use TextRank to extract key sentences
+	extracted := nlp.ExtractSummary(summary, 5)
+	if extracted != "" {
+		return extracted
 	}
+
+	// Last resort: truncate
+	return summary[:maxSummaryChars]
 }
 
 // summarizeWith uses the light LLM to generate a summary with a custom system prompt.
