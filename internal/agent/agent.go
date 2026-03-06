@@ -527,7 +527,7 @@ func (a *Agent) saveToLTM(ctx context.Context, input, response string, emotion *
 		Content:            content,
 		Embedding:          embedding,
 		ThreadKey:          a.threadKey,
-		EventDate:          time.Now().Format("2006-01-02"),
+		EventDate:          time.Now().Format("2006-01-02 15:04:05"),
 		EmotionalIntensity: emotion.Intensity,
 	}
 	a.store.SaveMemory(ctx, mem)
