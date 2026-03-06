@@ -293,7 +293,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 			}
 
 			// Confirmation for destructive tools
-			if a.needsConfirmation(tc.Name) {
+			if a.needsConfirmation(tc.Name, tc.Arguments) {
 				desc := toolConfirmMessage(tc.Name, tc.Arguments)
 				if !a.confirm(desc) {
 					a.log.Info("Tool denied by user: %s", tc.Name)
@@ -352,13 +352,49 @@ done:
 	return finalResponse, nil
 }
 
-func (a *Agent) needsConfirmation(name string) bool {
+// sensitiveFilePatterns lists file name patterns that may contain secrets.
+var sensitiveFilePatterns = []string{
+	".env",
+	".env.*",
+	"*.pem",
+	"*.key",
+	"*.p12",
+	"*.pfx",
+	"credentials.json",
+	"service-account*.json",
+	"*secret*",
+	"*token*",
+	"id_rsa",
+	"id_ed25519",
+	"id_ecdsa",
+	".netrc",
+	".npmrc",
+	".pypirc",
+}
+
+func isSensitiveFile(path string) bool {
+	base := filepath.Base(path)
+	for _, pattern := range sensitiveFilePatterns {
+		if matched, _ := filepath.Match(pattern, base); matched {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) needsConfirmation(name string, args string) bool {
 	if a.onConfirm == nil {
 		return false
 	}
 	switch name {
 	case "write_file", "execute_command":
 		return true
+	case "read_file":
+		var parsed struct {
+			Path string `json:"path"`
+		}
+		json.Unmarshal([]byte(args), &parsed)
+		return isSensitiveFile(parsed.Path)
 	}
 	return false
 }
@@ -379,6 +415,8 @@ func toolConfirmMessage(name, args string) string {
 	json.Unmarshal([]byte(args), &parsed)
 
 	switch name {
+	case "read_file":
+		return fmt.Sprintf("機密情報を含む可能性のあるファイルを読み込みます: %s", parsed.Path)
 	case "write_file":
 		msg := fmt.Sprintf("ファイルを書き込みます: %s\n--- 内容 ---\n%s\n--- 内容終わり ---", parsed.Path, parsed.Content)
 		return msg
