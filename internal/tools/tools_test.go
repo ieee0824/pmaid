@@ -184,6 +184,112 @@ func TestFileWrite_Execute(t *testing.T) {
 	})
 }
 
+func TestFileEdit_Execute(t *testing.T) {
+	dir := t.TempDir()
+	original := "line1\nline2\nline3\nline4\nline5\n"
+	os.WriteFile(filepath.Join(dir, "test.go"), []byte(original), 0644)
+
+	fe := NewFileEdit(dir)
+
+	t.Run("replace single line", func(t *testing.T) {
+		os.WriteFile(filepath.Join(dir, "a.txt"), []byte("aaa\nbbb\nccc\n"), 0644)
+		result, err := fe.Execute(nil, `{"path":"a.txt","patches":[{"start_line":2,"end_line":2,"content":"BBB"}]}`)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if !strings.Contains(result, "1 patches") {
+			t.Errorf("unexpected result: %s", result)
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, "a.txt"))
+		if string(data) != "aaa\nBBB\nccc\n" {
+			t.Errorf("content = %q", string(data))
+		}
+	})
+
+	t.Run("replace multiple lines", func(t *testing.T) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("1\n2\n3\n4\n5\n"), 0644)
+		result, err := fe.Execute(nil, `{"path":"b.txt","patches":[{"start_line":2,"end_line":4,"content":"replaced"}]}`)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, "b.txt"))
+		if string(data) != "1\nreplaced\n5\n" {
+			t.Errorf("content = %q", string(data))
+		}
+		_ = result
+	})
+
+	t.Run("insert mode (end_line=0)", func(t *testing.T) {
+		os.WriteFile(filepath.Join(dir, "c.txt"), []byte("a\nb\n"), 0644)
+		_, err := fe.Execute(nil, `{"path":"c.txt","patches":[{"start_line":2,"end_line":0,"content":"inserted"}]}`)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, "c.txt"))
+		if string(data) != "a\ninserted\nb\n" {
+			t.Errorf("content = %q", string(data))
+		}
+	})
+
+	t.Run("delete lines (empty content)", func(t *testing.T) {
+		os.WriteFile(filepath.Join(dir, "d.txt"), []byte("a\nb\nc\n"), 0644)
+		_, err := fe.Execute(nil, `{"path":"d.txt","patches":[{"start_line":2,"end_line":2,"content":""}]}`)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, "d.txt"))
+		if string(data) != "a\nc\n" {
+			t.Errorf("content = %q", string(data))
+		}
+	})
+
+	t.Run("multiple patches applied bottom-up", func(t *testing.T) {
+		os.WriteFile(filepath.Join(dir, "e.txt"), []byte("a\nb\nc\nd\ne\n"), 0644)
+		_, err := fe.Execute(nil, `{"path":"e.txt","patches":[{"start_line":2,"end_line":2,"content":"B"},{"start_line":4,"end_line":4,"content":"D"}]}`)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		data, _ := os.ReadFile(filepath.Join(dir, "e.txt"))
+		if string(data) != "a\nB\nc\nD\ne\n" {
+			t.Errorf("content = %q", string(data))
+		}
+	})
+
+	t.Run("out of range error", func(t *testing.T) {
+		os.WriteFile(filepath.Join(dir, "f.txt"), []byte("a\nb\n"), 0644)
+		_, err := fe.Execute(nil, `{"path":"f.txt","patches":[{"start_line":10,"end_line":10,"content":"x"}]}`)
+		if err == nil {
+			t.Error("expected error for out of range")
+		}
+	})
+
+	t.Run("no patches error", func(t *testing.T) {
+		_, err := fe.Execute(nil, `{"path":"f.txt","patches":[]}`)
+		if err == nil {
+			t.Error("expected error for no patches")
+		}
+	})
+}
+
+func TestDefinitionsExcluding(t *testing.T) {
+	reg := NewRegistry(
+		NewFileRead("/tmp"),
+		NewFileWrite("/tmp"),
+		NewExec("/tmp"),
+	)
+
+	exclude := map[string]bool{"execute_command": true}
+	defs := reg.DefinitionsExcluding(exclude)
+	if len(defs) != 2 {
+		t.Errorf("len(defs) = %d, want 2", len(defs))
+	}
+	for _, d := range defs {
+		if d.Name == "execute_command" {
+			t.Error("execute_command should be excluded")
+		}
+	}
+}
+
 func TestExec_Execute(t *testing.T) {
 	dir := t.TempDir()
 	ex := NewExec(dir)

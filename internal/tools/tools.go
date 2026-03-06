@@ -105,6 +105,22 @@ func (r *Registry) Definitions() []llm.ToolDef {
 	return defs
 }
 
+// DefinitionsExcluding returns tool definitions excluding the named tools.
+func (r *Registry) DefinitionsExcluding(exclude map[string]bool) []llm.ToolDef {
+	defs := make([]llm.ToolDef, 0, len(r.tools))
+	for _, t := range r.tools {
+		if exclude[t.Name()] {
+			continue
+		}
+		defs = append(defs, llm.ToolDef{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  t.Parameters(),
+		})
+	}
+	return defs
+}
+
 func (r *Registry) List() []Tool {
 	tt := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {

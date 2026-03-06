@@ -8,6 +8,7 @@ import (
 
 	memai "github.com/ieee0824/memAI-go"
 	"github.com/ieee0824/pmaid/internal/llm"
+	"github.com/ieee0824/pmaid/internal/plan"
 	"github.com/ieee0824/pmaid/internal/tools"
 )
 
@@ -657,6 +658,58 @@ func TestGraduatedCompression(t *testing.T) {
 	if oldCompressed == 0 && midStart > 1 {
 		t.Error("expected some old-tier messages to be compressed")
 	}
+}
+
+func TestFilteredToolDefs(t *testing.T) {
+	planHolder := &tools.PlanHolder{}
+	store := newMockStore()
+
+	ag := New(Config{
+		LLMClient:  &mockLLMClient{},
+		STM:        memai.NewSTM(memai.STMConfig{}),
+		LTM:        memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+		Store:      store,
+		Tools:      tools.NewRegistry(tools.NewFileRead("/tmp"), tools.NewCreatePlan(planHolder), tools.NewUpdatePlanStep(planHolder), tools.NewShowPlan(planHolder)),
+		PlanHolder: planHolder,
+		Embedder:   dummyEmbedder,
+		ContextDir: "/tmp",
+	})
+
+	t.Run("no plan excludes show_plan and update_plan_step", func(t *testing.T) {
+		defs := ag.filteredToolDefs()
+		names := make(map[string]bool)
+		for _, d := range defs {
+			names[d.Name] = true
+		}
+		if names["show_plan"] {
+			t.Error("show_plan should be excluded when no plan exists")
+		}
+		if names["update_plan_step"] {
+			t.Error("update_plan_step should be excluded when no plan exists")
+		}
+		if !names["create_plan"] {
+			t.Error("create_plan should be included when no plan exists")
+		}
+	})
+
+	t.Run("with plan excludes create_plan", func(t *testing.T) {
+		planHolder.Current = &plan.Plan{}
+		defs := ag.filteredToolDefs()
+		names := make(map[string]bool)
+		for _, d := range defs {
+			names[d.Name] = true
+		}
+		if names["create_plan"] {
+			t.Error("create_plan should be excluded when plan exists")
+		}
+		if !names["show_plan"] {
+			t.Error("show_plan should be included when plan exists")
+		}
+		if !names["update_plan_step"] {
+			t.Error("update_plan_step should be included when plan exists")
+		}
+		planHolder.Current = nil
+	})
 }
 
 func TestMessagesCharCount(t *testing.T) {

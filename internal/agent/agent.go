@@ -246,13 +246,15 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: userInput})
 
 	// Tool-calling loop
-	toolDefs := a.toolReg.Definitions()
 	var finalResponse string
 	var totalPromptTokens, totalCompletionTokens int
 
 	for i := 0; i < a.maxToolIterations; i++ {
 		// Compress context if messages are too large
 		messages = a.compressMessages(messages)
+
+		// Dynamic tool definition reduction
+		toolDefs := a.filteredToolDefs()
 
 		// Warn LLM when approaching iteration limit
 		remaining := a.maxToolIterations - i
@@ -430,7 +432,7 @@ func (a *Agent) needsConfirmation(name string, args string) bool {
 		return false
 	}
 	switch name {
-	case "write_file", "execute_command", "web_fetch":
+	case "write_file", "edit_file", "execute_command", "web_fetch":
 		return true
 	case "read_file":
 		var parsed struct {
@@ -466,6 +468,8 @@ func toolConfirmMessage(name, args string) string {
 	case "write_file":
 		msg := fmt.Sprintf("ファイルを書き込みます: %s\n--- 内容 ---\n%s\n--- 内容終わり ---", parsed.Path, parsed.Content)
 		return msg
+	case "edit_file":
+		return fmt.Sprintf("ファイルを編集します: %s", parsed.Path)
 	case "execute_command":
 		return fmt.Sprintf("コマンドを実行します: %s", parsed.Command)
 	default:
@@ -475,7 +479,7 @@ func toolConfirmMessage(name, args string) string {
 
 func (a *Agent) isPlanRequiredTool(name string) bool {
 	switch name {
-	case "write_file", "execute_command":
+	case "write_file", "edit_file", "execute_command":
 		return true
 	}
 	return false
@@ -539,6 +543,11 @@ func toolStatusMessage(name, args string) string {
 			return fmt.Sprintf("書き込み中: %s", parsed.Path)
 		}
 		return "ファイル書き込み中..."
+	case "edit_file":
+		if parsed.Path != "" {
+			return fmt.Sprintf("編集中: %s", parsed.Path)
+		}
+		return "ファイル編集中..."
 	case "execute_command":
 		if parsed.Command != "" {
 			return fmt.Sprintf("実行中: %s", parsed.Command)
@@ -689,6 +698,26 @@ func (a *Agent) summarizeWith(ctx context.Context, content string, systemPrompt 
 	return "[Summary] " + resp.Message.Content
 }
 
+// filteredToolDefs returns tool definitions with contextually irrelevant tools excluded.
+func (a *Agent) filteredToolDefs() []llm.ToolDef {
+	exclude := make(map[string]bool)
+
+	hasPlan := a.planHolder != nil && a.planHolder.Current != nil
+	if hasPlan {
+		// Plan already exists: no need to create another
+		exclude["create_plan"] = true
+	} else {
+		// No plan: show_plan and update_plan_step are useless
+		exclude["show_plan"] = true
+		exclude["update_plan_step"] = true
+	}
+
+	if len(exclude) == 0 {
+		return a.toolReg.Definitions()
+	}
+	return a.toolReg.DefinitionsExcluding(exclude)
+}
+
 // compressToolResult performs immediate compression of tool results based on tool type.
 // This reduces token consumption before the result enters the message history.
 func compressToolResult(toolName string, result string) string {
@@ -818,7 +847,7 @@ You help users with software engineering tasks including writing code, debugging
 
 ## Guidelines
 - Be concise and direct
-- When asked to modify files, use the write_file tool
+- When asked to modify files, prefer edit_file for small changes to existing files (more token-efficient). Use write_file for new files or complete rewrites
 - When asked to read files, use the read_file tool
 - When asked to run commands, use the execute_command tool
 - When asked to fetch web pages or URLs, use the web_fetch tool

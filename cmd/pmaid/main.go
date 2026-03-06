@@ -191,6 +191,7 @@ func main() {
 	toolRegistry := tools.NewRegistry(
 		tools.NewFileRead(absContext),
 		tools.NewFileWrite(absContext),
+		tools.NewFileEdit(absContext),
 		tools.NewExec(absContext),
 		tools.NewWebFetch(),
 		tools.NewCreatePlan(planHolder),
