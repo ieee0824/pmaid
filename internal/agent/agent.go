@@ -218,10 +218,21 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	})
 	if err == nil && len(results) > 0 {
 		var parts []string
+		totalChars := 0
+		const maxMemoryContextChars = 2000
 		for _, r := range results {
-			parts = append(parts, fmt.Sprintf("- %s (relevance: %.2f)", r.Memory.Content, r.Score))
+			// Summarize memory content: keep user query and truncate assistant response
+			summary := summarizeMemoryContent(r.Memory.Content, 150)
+			entry := fmt.Sprintf("- %s (relevance: %.2f)", summary, r.Score)
+			if totalChars+len(entry) > maxMemoryContextChars {
+				break
+			}
+			totalChars += len(entry)
+			parts = append(parts, entry)
 		}
-		memoryContext = "## Relevant Memories\n" + strings.Join(parts, "\n")
+		if len(parts) > 0 {
+			memoryContext = "## Relevant Memories\n" + strings.Join(parts, "\n")
+		}
 	}
 
 	// STM update
@@ -531,6 +542,25 @@ func (a *Agent) saveToLTM(ctx context.Context, input, response string, emotion *
 		EmotionalIntensity: emotion.Intensity,
 	}
 	a.store.SaveMemory(ctx, mem)
+}
+
+// summarizeMemoryContent extracts a compact summary from "User: ...\nAssistant: ..." format.
+func summarizeMemoryContent(content string, maxResponseRunes int) string {
+	parts := strings.SplitN(content, "\nAssistant: ", 2)
+	if len(parts) != 2 {
+		runes := []rune(content)
+		if len(runes) > maxResponseRunes {
+			return string(runes[:maxResponseRunes]) + "..."
+		}
+		return content
+	}
+	userMsg := strings.TrimPrefix(parts[0], "User: ")
+	assistantMsg := parts[1]
+	runes := []rune(assistantMsg)
+	if len(runes) > maxResponseRunes {
+		assistantMsg = string(runes[:maxResponseRunes]) + "..."
+	}
+	return fmt.Sprintf("Q: %s / A: %s", userMsg, assistantMsg)
 }
 
 func truncate(s string, n int) string {
@@ -953,13 +983,10 @@ func buildSystemPrompt(name, contextDir, memoryContext, planContext, skillsConte
 You help users with software engineering tasks including writing code, debugging, file operations, and running commands.
 
 ## Guidelines
-- Be concise and direct
-- When asked to modify files, prefer edit_file for small changes to existing files (more token-efficient). Use write_file for new files or complete rewrites
-- When asked to read files, use the read_file tool
-- When asked to run commands, use the execute_command tool
-- When asked to fetch web pages or URLs, use the web_fetch tool
-- Always explain what you're doing before using tools
-- Before editing or creating files, ALWAYS read existing files in the same directory first to understand the codebase conventions (naming, error handling, code style, patterns). Follow the existing conventions consistently
+- Be concise and direct. Go straight to the problem — avoid unnecessary preamble or exploration
+- Prefer edit_file for small changes, write_file for new files or complete rewrites
+- Use tools immediately when appropriate — no need to explain each tool call beforehand
+- When editing existing files, follow the existing code conventions (naming, error handling, style)
 
 ## Planning
 - For large tasks (multi-file changes, refactoring, new features with multiple components), ALWAYS create a plan first using create_plan
