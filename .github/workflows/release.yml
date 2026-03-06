@@ -41,7 +41,8 @@ jobs:
         run: |
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
-          go build -ldflags "-s -w" -o "pmaid-${GOOS}-${GOARCH}${EXT}" ./cmd/pmaid/
+          VERSION="${{ github.event.release.tag_name }}"
+          go build -ldflags "-s -w -X main.version=${VERSION}" -o "pmaid-${GOOS}-${GOARCH}${EXT}" ./cmd/pmaid/
 
       - name: Create archive
         run: |

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	memai "github.com/ieee0824/memAI-go"
@@ -22,11 +23,31 @@ import (
 	"github.com/ieee0824/pmaid/internal/tools"
 )
 
+// version is set via -ldflags at build time.
+// Falls back to Go module version (for go install).
+var version = ""
+
+func getVersion() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
+
 func main() {
 	// Handle subcommands before flag parsing
-	if len(os.Args) > 1 && os.Args[1] == "history" {
-		runHistory(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "history":
+			runHistory(os.Args[2:])
+			return
+		case "--version", "version":
+			fmt.Println(getVersion())
+			return
+		}
 	}
 
 	query := flag.String("q", "", "Direct query (non-interactive mode)")
