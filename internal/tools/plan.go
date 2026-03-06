@@ -25,7 +25,7 @@ func NewCreatePlan(holder *PlanHolder) *CreatePlan {
 
 func (c *CreatePlan) Name() string        { return "create_plan" }
 func (c *CreatePlan) Description() string {
-	return "Create an execution plan for a large task. The plan must be approved by the user before execution begins. Use this for tasks that involve multiple files, complex refactoring, or multi-step operations."
+	return "Create an execution plan for a large task. The plan must be approved by the user before execution begins. Use this for tasks that involve multiple files, complex refactoring, or multi-step operations. The first step of the plan MUST be reading existing code to understand the codebase conventions (naming, error handling, code style, patterns) before making any changes."
 }
 func (c *CreatePlan) Parameters() map[string]interface{} {
 	return map[string]interface{}{
