@@ -53,6 +53,9 @@ func main() {
 		case "--version", "version":
 			fmt.Println(getVersion())
 			return
+		case "completion":
+			printBashCompletion()
+			return
 		}
 	}
 
@@ -438,6 +441,39 @@ func runHistory(args []string, styles ui.Styles) {
 		fmt.Println()
 	}
 	fmt.Printf("(%d件表示)\n", len(entries))
+}
+
+func printBashCompletion() {
+	fmt.Print(`_pmaid() {
+    local cur prev commands flags
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    commands="history usage version completion"
+    flags="-q -context -model -config"
+
+    if [[ ${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "${commands} ${flags}" -- "${cur}") )
+        return 0
+    fi
+
+    case "${prev}" in
+        -q|-context|-config)
+            COMPREPLY=()
+            ;;
+        -model)
+            COMPREPLY=()
+            ;;
+        history|usage)
+            COMPREPLY=( $(compgen -W "-n -config" -- "${cur}") )
+            ;;
+        *)
+            COMPREPLY=( $(compgen -W "${flags}" -- "${cur}") )
+            ;;
+    esac
+}
+complete -F _pmaid pmaid
+`)
 }
 
 func truncateStr(s string, n int) string {
