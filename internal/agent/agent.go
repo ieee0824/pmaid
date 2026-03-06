@@ -272,6 +272,11 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		resp, err := a.llmClient.Chat(ctx, messages, toolDefs)
 		if err != nil {
 			a.log.Error("LLM error: %v", err)
+			if totalPromptTokens > 0 || totalCompletionTokens > 0 {
+				if saveErr := a.store.SaveTokenUsage(ctx, a.version, a.model, a.turn, totalPromptTokens, totalCompletionTokens); saveErr != nil {
+					a.log.Warn("Failed to save token usage on error: %v", saveErr)
+				}
+			}
 			return "", fmt.Errorf("llm chat: %w", err)
 		}
 
