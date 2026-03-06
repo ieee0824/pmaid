@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -52,6 +54,12 @@ type Agent struct {
 	log               *logger.Logger
 	maxToolIterations int
 	maxContextChars   int
+	fileCache         map[string]fileCacheEntry // path -> cache entry for read dedup
+}
+
+type fileCacheEntry struct {
+	hash         string
+	messageIndex int
 }
 
 type EmbedFunc func(ctx context.Context, text string) ([]float64, error)
@@ -121,6 +129,7 @@ func New(cfg Config) *Agent {
 		log:               log,
 		maxToolIterations: maxIter,
 		maxContextChars:   maxCtx,
+		fileCache:         make(map[string]fileCacheEntry),
 	}
 }
 
@@ -277,7 +286,8 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 		messages = append(messages, resp.Message)
 
 		// Execute each tool call
-		for _, tc := range resp.Message.ToolCalls {
+		for ti := range resp.Message.ToolCalls {
+			tc := &resp.Message.ToolCalls[ti]
 			a.log.Info("Tool call: name=%s args=%s", tc.Name, truncate(tc.Arguments, 200))
 
 			tool, ok := a.toolReg.Get(tc.Name)
@@ -322,8 +332,16 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 			if err != nil {
 				a.log.Error("Tool error: name=%s err=%v", tc.Name, err)
 				result = fmt.Sprintf("Error: %s", err)
+			} else {
+				// Post-compress write_file arguments to save tokens
+				compressToolCallArgs(tc, result)
 			}
 			a.log.Debug("Tool result: name=%s len=%d", tc.Name, len(result))
+
+			// Deduplicate read_file results using file cache
+			if tc.Name == "read_file" && err == nil {
+				result = a.deduplicateFileRead(tc.Arguments, result, len(messages))
+			}
 
 			// Wrap external content to prevent prompt injection
 			if isExternalContentTool(tc.Name) {
@@ -646,6 +664,44 @@ func (a *Agent) summarize(ctx context.Context, content string) string {
 		return ""
 	}
 	return "[Summary] " + resp.Message.Content
+}
+
+// compressToolCallArgs replaces large tool call arguments with a compact summary
+// after successful execution to save context tokens.
+func compressToolCallArgs(tc *llm.ToolCall, result string) {
+	switch tc.Name {
+	case "write_file":
+		var parsed struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal([]byte(tc.Arguments), &parsed) == nil && len(parsed.Content) > 200 {
+			lines := strings.Count(parsed.Content, "\n") + 1
+			tc.Arguments = fmt.Sprintf(`{"path":%q,"content":"[written: %d lines, %d chars]"}`, parsed.Path, lines, len(parsed.Content))
+		}
+	}
+}
+
+// deduplicateFileRead returns a short placeholder if the same file was previously
+// read and its content has not changed (based on SHA-256 hash).
+func (a *Agent) deduplicateFileRead(args string, content string, msgIndex int) string {
+	var parsed struct {
+		Path string `json:"path"`
+	}
+	if json.Unmarshal([]byte(args), &parsed) != nil || parsed.Path == "" {
+		return content
+	}
+
+	h := sha256.Sum256([]byte(content))
+	hash := hex.EncodeToString(h[:])
+
+	if cached, ok := a.fileCache[parsed.Path]; ok && cached.hash == hash {
+		a.log.Debug("File cache hit: %s (unchanged since message #%d)", parsed.Path, cached.messageIndex)
+		return fmt.Sprintf("[previously read: %s, unchanged (%d lines)]", parsed.Path, strings.Count(content, "\n")+1)
+	}
+
+	a.fileCache[parsed.Path] = fileCacheEntry{hash: hash, messageIndex: msgIndex}
+	return content
 }
 
 // detectLanguages checks for common project files in dir and returns detected languages.

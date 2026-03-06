@@ -450,6 +450,100 @@ func (f *fakeTool) Description() string                          { return "fake 
 func (f *fakeTool) Parameters() map[string]interface{}            { return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}} }
 func (f *fakeTool) Execute(_ interface{}, _ string) (string, error) { return f.result, nil }
 
+func TestCompressToolCallArgs(t *testing.T) {
+	t.Run("write_file with large content", func(t *testing.T) {
+		content := strings.Repeat("line\n", 100) // 500 chars, 100 lines
+		tc := &llm.ToolCall{
+			ID:        "call-1",
+			Name:      "write_file",
+			Arguments: fmt.Sprintf(`{"path":"main.go","content":%q}`, content),
+		}
+		compressToolCallArgs(tc, "File written successfully")
+
+		if strings.Contains(tc.Arguments, "line\n") {
+			t.Error("expected content to be compressed, but original content still present")
+		}
+		if !strings.Contains(tc.Arguments, "main.go") {
+			t.Error("expected path to be preserved")
+		}
+		if !strings.Contains(tc.Arguments, "[written:") {
+			t.Errorf("expected compressed marker, got: %s", tc.Arguments)
+		}
+	})
+
+	t.Run("write_file with small content", func(t *testing.T) {
+		tc := &llm.ToolCall{
+			ID:        "call-1",
+			Name:      "write_file",
+			Arguments: `{"path":"small.txt","content":"hi"}`,
+		}
+		original := tc.Arguments
+		compressToolCallArgs(tc, "File written successfully")
+
+		if tc.Arguments != original {
+			t.Error("small content should not be compressed")
+		}
+	})
+
+	t.Run("non-write_file tool unchanged", func(t *testing.T) {
+		tc := &llm.ToolCall{
+			ID:        "call-1",
+			Name:      "read_file",
+			Arguments: `{"path":"main.go"}`,
+		}
+		original := tc.Arguments
+		compressToolCallArgs(tc, "file content here")
+
+		if tc.Arguments != original {
+			t.Error("read_file args should not be modified")
+		}
+	})
+}
+
+func TestDeduplicateFileRead(t *testing.T) {
+	store := newMockStore()
+	ag := New(Config{
+		LLMClient:  &mockLLMClient{},
+		STM:        memai.NewSTM(memai.STMConfig{}),
+		LTM:        memai.NewLTM[string](store, dummyEmbedder, memai.LTMConfig{}),
+		Store:      store,
+		Tools:      tools.NewRegistry(),
+		Embedder:   dummyEmbedder,
+		ContextDir: "/tmp",
+	})
+
+	args := `{"path":"/tmp/test.go"}`
+	content := "package main\n\nfunc main() {}\n"
+
+	// First read: should return full content
+	result1 := ag.deduplicateFileRead(args, content, 5)
+	if result1 != content {
+		t.Errorf("first read should return full content, got: %s", result1)
+	}
+
+	// Second read with same content: should return placeholder
+	result2 := ag.deduplicateFileRead(args, content, 10)
+	if !strings.Contains(result2, "previously read") {
+		t.Errorf("second read of same content should return placeholder, got: %s", result2)
+	}
+	if !strings.Contains(result2, "/tmp/test.go") {
+		t.Error("placeholder should contain the file path")
+	}
+
+	// Third read with different content: should return full content
+	newContent := "package main\n\nfunc main() { fmt.Println(\"hello\") }\n"
+	result3 := ag.deduplicateFileRead(args, newContent, 15)
+	if result3 != newContent {
+		t.Errorf("read of changed content should return full content, got: %s", result3)
+	}
+
+	// Fourth read with same new content: should return placeholder again
+	result4 := ag.deduplicateFileRead(args, newContent, 20)
+	if !strings.Contains(result4, "previously read") {
+		t.Errorf("repeated read of updated content should return placeholder, got: %s", result4)
+	}
+}
+
 func TestMessagesCharCount(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: "hello"},
