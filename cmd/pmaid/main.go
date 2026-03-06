@@ -267,7 +267,7 @@ func main() {
 
 	// Interactive mode
 	fmt.Printf("%s - Programming AI Assistant with Memory\n", styles.Banner(agentName))
-	fmt.Println("Type your message (Ctrl+D to exit)")
+	fmt.Println("Type your message (empty line to send, Ctrl+D to exit)")
 	if !styles.Enabled {
 		fmt.Println("(hint) set PMAID_FORCE_COLOR=1 to force color; set NO_COLOR=1 to disable")
 	}
@@ -278,13 +278,24 @@ func main() {
 
 	for {
 		fmt.Print(styles.PromptMe("you> "))
-		if !scanner.Scan() {
-			break
+		var lines []string
+		eof := true
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				eof = false
+				break
+			}
+			lines = append(lines, line)
+			fmt.Print(styles.PromptMe("...> "))
 		}
-		input := scanner.Text()
-		if input == "" {
+		if len(lines) == 0 {
+			if eof {
+				break
+			}
 			continue
 		}
+		input := strings.Join(lines, "\n")
 
 		activeSpinner = spinner.New(os.Stderr, "考え中...")
 		ag.SetOnStatus(activeSpinner.SetMessage)
@@ -300,6 +311,10 @@ func main() {
 		// Plan approval flow
 		if ag.HasPendingPlan() {
 			handlePlanApproval(ag, scanner, ctx, &activeSpinner, agentName, styles)
+		}
+
+		if eof {
+			break
 		}
 	}
 
