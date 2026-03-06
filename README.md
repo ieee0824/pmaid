@@ -118,6 +118,11 @@ max_context_chars = 100000 # コンテキスト圧縮が発動する文字数上
 export OPENAI_API_KEY="your-api-key"
 export GEMINI_API_KEY="your-gemini-key"       # Google AI / Gemma
 export PMAID_MEMORY_PATH="~/.pmaid/memory"    # 設定ファイルより優先
+
+# カラー出力
+# - デフォルト: TTYのときのみ有効（パイプ/リダイレクト時は無効）
+export NO_COLOR=1                 # カラー出力を無効化
+export PMAID_FORCE_COLOR=1         # TTY判定等に関わらず強制的に有効化
 ```
 
 ### 優先順位

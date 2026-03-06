@@ -21,6 +21,7 @@ import (
 	"github.com/ieee0824/pmaid/internal/skills"
 	"github.com/ieee0824/pmaid/internal/spinner"
 	"github.com/ieee0824/pmaid/internal/tools"
+	"github.com/ieee0824/pmaid/internal/ui"
 )
 
 // version is set via -ldflags at build time.
@@ -38,11 +39,13 @@ func getVersion() string {
 }
 
 func main() {
+	styles := ui.NewStyles()
+
 	// Handle subcommands before flag parsing
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "history":
-			runHistory(os.Args[2:])
+			runHistory(os.Args[2:], styles)
 			return
 		case "--version", "version":
 			fmt.Println(getVersion())
@@ -68,7 +71,7 @@ func main() {
 		var setupErr error
 		cfg, setupErr = config.InteractiveSetup(cfgPath, os.Stdin, os.Stdout)
 		if setupErr != nil {
-			fmt.Fprintf(os.Stderr, "Error during setup: %v\n", setupErr)
+			fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error during setup:"), setupErr)
 			os.Exit(1)
 		}
 		fmt.Println()
@@ -76,7 +79,7 @@ func main() {
 		var loadErr error
 		cfg, loadErr = config.Load(cfgPath)
 		if loadErr != nil {
-			fmt.Fprintf(os.Stderr, "Error loading config: %v\n", loadErr)
+			fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error loading config:"), loadErr)
 			os.Exit(1)
 		}
 	}
@@ -92,21 +95,21 @@ func main() {
 
 	absContext, err := filepath.Abs(cfg.ContextDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error resolving context dir: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error resolving context dir:"), err)
 		os.Exit(1)
 	}
 
 	// Memory path
 	memPath := cfg.ResolveMemoryPath()
 	if err := os.MkdirAll(memPath, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating memory dir: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error creating memory dir:"), err)
 		os.Exit(1)
 	}
 
 	// Logger
 	log, err := logger.New(filepath.Join(memPath, "logs"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating logger: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error creating logger:"), err)
 		os.Exit(1)
 	}
 	defer log.Close()
@@ -114,7 +117,7 @@ func main() {
 	// SQLite store
 	store, err := memory.NewSQLiteStore(filepath.Join(memPath, "memories.db"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening memory store: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error opening memory store:"), err)
 		os.Exit(1)
 	}
 	defer store.Close()
@@ -218,7 +221,7 @@ func main() {
 		if activeSpinner != nil {
 			activeSpinner.Stop()
 		}
-		fmt.Fprintf(os.Stderr, "\n⚠ %s\n", desc)
+		fmt.Fprintf(os.Stderr, "\n%s %s\n", styles.Warn("⚠"), desc)
 		fmt.Fprint(os.Stderr, "実行しますか？ [y/n]: ")
 		if !confirmScanner.Scan() {
 			activeSpinner = spinner.New(os.Stderr, "考え中...")
@@ -229,7 +232,7 @@ func main() {
 		answer := strings.TrimSpace(strings.ToLower(confirmScanner.Text()))
 		approved := answer == "y" || answer == "yes" || answer == "はい"
 		if !approved {
-			fmt.Fprintln(os.Stderr, "却下しました。")
+			fmt.Fprintln(os.Stderr, styles.Info("却下しました。"))
 		}
 		// Resume spinner
 		activeSpinner = spinner.New(os.Stderr, "考え中...")
@@ -247,7 +250,7 @@ func main() {
 		result, err := ag.Run(ctx, *query)
 		activeSpinner.Stop()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error:"), err)
 			os.Exit(1)
 		}
 		fmt.Println(result)
@@ -255,15 +258,18 @@ func main() {
 	}
 
 	// Interactive mode
-	fmt.Printf("%s - Programming AI Assistant with Memory\n", agentName)
+	fmt.Printf("%s - Programming AI Assistant with Memory\n", styles.Banner(agentName))
 	fmt.Println("Type your message (Ctrl+D to exit)")
+	if !styles.Enabled {
+		fmt.Println("(hint) set PMAID_FORCE_COLOR=1 to force color; set NO_COLOR=1 to disable")
+	}
 	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer
 
 	for {
-		fmt.Print("you> ")
+		fmt.Print(styles.PromptMe("you> "))
 		if !scanner.Scan() {
 			break
 		}
@@ -278,23 +284,23 @@ func main() {
 		result, err := ag.Run(ctx, input)
 		activeSpinner.Stop()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error:"), err)
 			continue
 		}
-		fmt.Printf("\n%s> %s\n\n", agentName, result)
+		fmt.Printf("\n%s %s\n\n", styles.PromptAI(agentName+">"), result)
 
 		// Plan approval flow
 		if ag.HasPendingPlan() {
-			handlePlanApproval(ag, scanner, ctx, &activeSpinner, agentName)
+			handlePlanApproval(ag, scanner, ctx, &activeSpinner, agentName, styles)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error reading input:"), err)
 	}
 }
 
-func runHistory(args []string) {
+func runHistory(args []string, styles ui.Styles) {
 	fs := flag.NewFlagSet("history", flag.ExitOnError)
 	limit := fs.Int("n", 20, "Number of entries to show")
 	configPath := fs.String("config", "", "Config file path")
@@ -306,14 +312,14 @@ func runHistory(args []string) {
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error loading config:"), err)
 		os.Exit(1)
 	}
 
 	memPath := cfg.ResolveMemoryPath()
 	store, err := memory.NewSQLiteStore(filepath.Join(memPath, "memories.db"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening memory store: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error opening memory store:"), err)
 		os.Exit(1)
 	}
 	defer store.Close()
@@ -328,7 +334,7 @@ func runHistory(args []string) {
 		entries, err = store.ListRecent(ctx, *limit)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error:"), err)
 		os.Exit(1)
 	}
 
@@ -340,13 +346,13 @@ func runHistory(args []string) {
 	// Display in chronological order (entries are newest-first)
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
-		fmt.Printf("─── %s ───\n", e.EventDate)
+		fmt.Printf("%s %s %s\n", styles.Info("───"), e.EventDate, styles.Info("───"))
 		// Parse "User: ...\nAssistant: ..." format
 		parts := strings.SplitN(e.Content, "\nAssistant: ", 2)
 		if len(parts) == 2 {
 			userMsg := strings.TrimPrefix(parts[0], "User: ")
-			fmt.Printf("  you>   %s\n", userMsg)
-			fmt.Printf("  pmaid> %s\n", truncateStr(parts[1], 200))
+			fmt.Printf("  %s   %s\n", styles.PromptMe("you>"), userMsg)
+			fmt.Printf("  %s %s\n", styles.PromptAI("pmaid>"), truncateStr(parts[1], 200))
 		} else {
 			fmt.Printf("  %s\n", truncateStr(e.Content, 200))
 		}
@@ -362,7 +368,7 @@ func truncateStr(s string, n int) string {
 	return s[:n] + "..."
 }
 
-func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Context, spRef **spinner.Spinner, agentName string) {
+func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Context, spRef **spinner.Spinner, agentName string, styles ui.Styles) {
 	for {
 		fmt.Print("\nプランを承認しますか？ [y: 承認 / n: 却下 / e: 修正依頼]: ")
 		if !scanner.Scan() {
@@ -380,10 +386,10 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 			result, err := ag.Run(ctx, "Plan approved. Please execute the plan step by step.")
 			(*spRef).Stop()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error:"), err)
 				return
 			}
-			fmt.Printf("\n%s> %s\n\n", agentName, result)
+			fmt.Printf("\n%s %s\n\n", styles.PromptAI(agentName+">"), result)
 			return
 
 		case "n", "no", "いいえ":
@@ -404,10 +410,10 @@ func handlePlanApproval(ag *agent.Agent, scanner *bufio.Scanner, ctx context.Con
 			result, err := ag.Run(ctx, fmt.Sprintf("The previous plan was rejected. Please revise it with this feedback: %s", feedback))
 			(*spRef).Stop()
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error:"), err)
 				return
 			}
-			fmt.Printf("\n%s> %s\n\n", agentName, result)
+			fmt.Printf("\n%s %s\n\n", styles.PromptAI(agentName+">"), result)
 			// Loop again for new plan approval if a new plan was created
 			if !ag.HasPendingPlan() {
 				return
