@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -565,6 +567,50 @@ func (a *Agent) summarize(ctx context.Context, content string) string {
 	return "[Summary] " + resp.Message.Content
 }
 
+// detectLanguages checks for common project files in dir and returns detected languages.
+func detectLanguages(dir string) []string {
+	indicators := []struct {
+		file string
+		lang string
+	}{
+		{"go.mod", "Go"},
+		{"package.json", "JavaScript/TypeScript"},
+		{"tsconfig.json", "TypeScript"},
+		{"Cargo.toml", "Rust"},
+		{"pyproject.toml", "Python"},
+		{"requirements.txt", "Python"},
+		{"setup.py", "Python"},
+		{"Gemfile", "Ruby"},
+		{"pom.xml", "Java"},
+		{"build.gradle", "Java/Kotlin"},
+		{"build.gradle.kts", "Kotlin"},
+		{"*.csproj", "C#"},
+		{"CMakeLists.txt", "C/C++"},
+		{"Makefile", "Make"},
+		{"composer.json", "PHP"},
+		{"mix.exs", "Elixir"},
+		{"pubspec.yaml", "Dart/Flutter"},
+		{"Package.swift", "Swift"},
+	}
+	seen := map[string]bool{}
+	var langs []string
+	for _, ind := range indicators {
+		matches, _ := filepath.Glob(filepath.Join(dir, ind.file))
+		if len(matches) > 0 && !seen[ind.lang] {
+			seen[ind.lang] = true
+			langs = append(langs, ind.lang)
+		}
+	}
+	// Check for .env or Dockerfile as framework hints
+	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
+		if !seen["Docker"] {
+			seen["Docker"] = true
+			langs = append(langs, "Docker")
+		}
+	}
+	return langs
+}
+
 func buildSystemPrompt(name, contextDir, memoryContext, planContext, skillsContext string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf(`You are %s, a programming AI assistant with memory.
@@ -596,6 +642,9 @@ You help users with software engineering tasks including writing code, debugging
 
 	if contextDir != "" {
 		sb.WriteString(fmt.Sprintf("\n## Context\nWorking directory: %s\n", contextDir))
+		if langs := detectLanguages(contextDir); len(langs) > 0 {
+			sb.WriteString(fmt.Sprintf("Detected languages: %s\n", strings.Join(langs, ", ")))
+		}
 	}
 
 	if planContext != "" {
