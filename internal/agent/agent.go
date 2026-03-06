@@ -46,6 +46,8 @@ type Agent struct {
 	onStatus          StatusFunc
 	onConfirm         ConfirmFunc
 	name              string
+	version           string
+	model             string
 	skillsContext     string
 	log               *logger.Logger
 	maxToolIterations int
@@ -57,6 +59,7 @@ type EmbedFunc func(ctx context.Context, text string) ([]float64, error)
 type MemoryStoreWithBoost interface {
 	SaveMemory(ctx context.Context, mem *memai.Memory[string]) error
 	UpdateBoost(ctx context.Context, id string, delta float64) error
+	SaveTokenUsage(ctx context.Context, version, model string, turn, promptTokens, completionTokens int) error
 }
 
 type Config struct {
@@ -72,6 +75,8 @@ type Config struct {
 	OnStatus          StatusFunc
 	OnConfirm         ConfirmFunc
 	Name              string
+	Version           string
+	Model             string
 	SkillsContext     string
 	Logger            *logger.Logger
 	MaxToolIterations int
@@ -110,6 +115,8 @@ func New(cfg Config) *Agent {
 		onStatus:          cfg.OnStatus,
 		onConfirm:         cfg.OnConfirm,
 		name:              name,
+		version:           cfg.Version,
+		model:             cfg.Model,
 		skillsContext:     cfg.SkillsContext,
 		log:               log,
 		maxToolIterations: maxIter,
@@ -232,6 +239,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 	// Tool-calling loop
 	toolDefs := a.toolReg.Definitions()
 	var finalResponse string
+	var totalPromptTokens, totalCompletionTokens int
 
 	for i := 0; i < a.maxToolIterations; i++ {
 		// Compress context if messages are too large
@@ -255,7 +263,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) (string, error) {
 			return "", fmt.Errorf("llm chat: %w", err)
 		}
 
-		a.log.Debug("LLM response: content_len=%d tool_calls=%d", len(resp.Message.Content), len(resp.Message.ToolCalls))
+		totalPromptTokens += resp.Usage.PromptTokens
+		totalCompletionTokens += resp.Usage.CompletionTokens
+		a.log.Debug("LLM response: content_len=%d tool_calls=%d prompt_tokens=%d completion_tokens=%d", len(resp.Message.Content), len(resp.Message.ToolCalls), resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 
 		if len(resp.Message.ToolCalls) == 0 {
 			finalResponse = resp.Message.Content
@@ -348,7 +358,12 @@ done:
 	// Save to LTM
 	a.saveToLTM(ctx, userInput, finalResponse, emotion)
 
-	a.log.Info("Run end: turn=%d response_len=%d", a.turn, len(finalResponse))
+	// Save token usage to SQLite
+	if err := a.store.SaveTokenUsage(ctx, a.version, a.model, a.turn, totalPromptTokens, totalCompletionTokens); err != nil {
+		a.log.Warn("Failed to save token usage: %v", err)
+	}
+
+	a.log.Info("Run end: turn=%d response_len=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d", a.turn, len(finalResponse), totalPromptTokens, totalCompletionTokens, totalPromptTokens+totalCompletionTokens)
 	return finalResponse, nil
 }
 

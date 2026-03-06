@@ -11,13 +11,15 @@ Programming AI Assistant with Memory
   - STM（短期記憶）: 活性化減衰モデルによるワーキングメモリ
   - LTM（長期記憶）: ベクトル検索 + 感情プライミング
   - 感情分析・フィードバック検出
-- ファイル読み書き・コマンド実行ツール
+- ファイル読み書き・コマンド実行ツール（機密ファイル読み込み時の警告付き）
 - プランモード（大規模変更の計画→承認→実行フロー）
 - 軽量LLMによるコンテキスト圧縮（Gemma等で要約生成）
 - コンテキスト管理（自動圧縮 + イテレーション制限のラップアップヒント）
 - カスタムスキル（`~/.pmaid/skills/` にプロンプトテンプレートを配置）
 - 会話履歴の検索・閲覧（`pmaid history`）
-- 対話型CLI / 直接クエリモード
+- トークン使用量トラッキング（`pmaid usage`）
+- 対話型CLI（複数行入力対応）/ 直接クエリモード
+- プロジェクト言語の自動検出（go.mod, package.json等からシステムプロンプトに注入）
 - SQLiteによるメモリ永続化（ピュアGo、CGO不要）
 - ローカルTF-IDF Embedding（外部API不要）
 - エクスポネンシャルバックオフによるAPIリトライ（429/5xx対応）
@@ -51,6 +53,12 @@ pmaid history -n 50
 
 # キーワードで履歴を検索
 pmaid history "リファクタリング"
+
+# トークン使用量を表示（日別・バージョン別・モデル別）
+pmaid usage
+
+# 最近50件の使用量サマリーを表示
+pmaid usage -n 50
 ```
 
 ## Configuration
@@ -142,7 +150,7 @@ internal/
     google/google.go           # Google AI実装 (Gemini API互換エンドポイント)
   memory/
     embedding.go               # TF-IDF ローカルEmbedding (512次元)
-    store.go                   # SQLite MemoryStore + 履歴検索
+    store.go                   # SQLite MemoryStore + 履歴検索 + トークン使用量記録
   tools/
     tools.go                   # Toolインターフェース + Registry (ファジーマッチ)
     fileread.go                # read_file

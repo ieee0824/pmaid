@@ -52,6 +52,10 @@ func (s *mockStore) UpdateBoost(_ context.Context, id string, delta float64) err
 	return nil
 }
 
+func (s *mockStore) SaveTokenUsage(_ context.Context, _, _ string, _, _, _ int) error {
+	return nil
+}
+
 func (s *mockStore) GetMemories(_ context.Context) ([]memai.Memory[string], error) {
 	return s.memories, nil
 }

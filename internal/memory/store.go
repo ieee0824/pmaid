@@ -35,7 +35,24 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	`)
 	if err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create table: %w", err)
+		return nil, fmt.Errorf("create memories table: %w", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS token_usage (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+			version TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			turn INTEGER NOT NULL DEFAULT 0,
+			prompt_tokens INTEGER NOT NULL DEFAULT 0,
+			completion_tokens INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0
+		)
+	`)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create token_usage table: %w", err)
 	}
 
 	return &SQLiteStore{db: db}, nil
@@ -156,6 +173,68 @@ func (s *SQLiteStore) SearchContent(ctx context.Context, query string, limit int
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// TokenUsageRecord represents a single token usage entry.
+type TokenUsageRecord struct {
+	Timestamp        string
+	Model            string
+	Turn             int
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
+// SaveTokenUsage records token consumption for a single turn.
+func (s *SQLiteStore) SaveTokenUsage(ctx context.Context, version, model string, turn, promptTokens, completionTokens int) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO token_usage (version, model, turn, prompt_tokens, completion_tokens, total_tokens)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, version, model, turn, promptTokens, completionTokens, promptTokens+completionTokens)
+	if err != nil {
+		return fmt.Errorf("save token usage: %w", err)
+	}
+	return nil
+}
+
+// TokenUsageSummary returns aggregated token usage grouped by date, version and model.
+func (s *SQLiteStore) TokenUsageSummary(ctx context.Context, limit int) ([]TokenUsageDailySummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT date(timestamp) as day, version, model,
+			COUNT(*) as turns,
+			SUM(prompt_tokens) as prompt_total,
+			SUM(completion_tokens) as completion_total,
+			SUM(total_tokens) as total
+		FROM token_usage
+		GROUP BY day, version, model
+		ORDER BY day DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("token usage summary: %w", err)
+	}
+	defer rows.Close()
+
+	var summaries []TokenUsageDailySummary
+	for rows.Next() {
+		var s TokenUsageDailySummary
+		if err := rows.Scan(&s.Date, &s.Version, &s.Model, &s.Turns, &s.PromptTokens, &s.CompletionTokens, &s.TotalTokens); err != nil {
+			return nil, fmt.Errorf("scan summary: %w", err)
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
+}
+
+// TokenUsageDailySummary holds aggregated token usage for a single day, version and model.
+type TokenUsageDailySummary struct {
+	Date             string
+	Version          string
+	Model            string
+	Turns            int
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 func (s *SQLiteStore) Close() error {

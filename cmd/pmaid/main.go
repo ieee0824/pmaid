@@ -47,6 +47,9 @@ func main() {
 		case "history":
 			runHistory(os.Args[2:], styles)
 			return
+		case "usage":
+			runUsage(os.Args[2:], styles)
+			return
 		case "--version", "version":
 			fmt.Println(getVersion())
 			return
@@ -210,6 +213,8 @@ func main() {
 		Embedder:          embedder.EmbedFunc(),
 		ContextDir:        absContext,
 		Name:              cfg.Name,
+		Version:           getVersion(),
+		Model:             cfg.LLM.Model,
 		SkillsContext:     skillsCtx,
 		Logger:            log,
 		MaxToolIterations: cfg.Agent.MaxToolIterations,
@@ -321,6 +326,55 @@ func main() {
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error reading input:"), err)
 	}
+}
+
+func runUsage(args []string, styles ui.Styles) {
+	fs := flag.NewFlagSet("usage", flag.ExitOnError)
+	limit := fs.Int("n", 30, "Number of summary rows to show")
+	configPath := fs.String("config", "", "Config file path")
+	fs.Parse(args)
+
+	cfgPath := *configPath
+	if cfgPath == "" {
+		cfgPath = config.DefaultConfigPath()
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error loading config:"), err)
+		os.Exit(1)
+	}
+
+	memPath := cfg.ResolveMemoryPath()
+	store, err := memory.NewSQLiteStore(filepath.Join(memPath, "memories.db"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error opening memory store:"), err)
+		os.Exit(1)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	summaries, err := store.TokenUsageSummary(ctx, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s %v\n", styles.Error("Error:"), err)
+		os.Exit(1)
+	}
+
+	if len(summaries) == 0 {
+		fmt.Println("トークン使用履歴がありません。")
+		return
+	}
+
+	fmt.Printf("%-12s %-10s %-20s %6s %10s %10s %10s\n",
+		"Date", "Version", "Model", "Turns", "Prompt", "Completion", "Total")
+	fmt.Println(strings.Repeat("─", 84))
+	var grandTotal int
+	for _, s := range summaries {
+		fmt.Printf("%-12s %-10s %-20s %6d %10d %10d %10d\n",
+			s.Date, s.Version, s.Model, s.Turns, s.PromptTokens, s.CompletionTokens, s.TotalTokens)
+		grandTotal += s.TotalTokens
+	}
+	fmt.Println(strings.Repeat("─", 84))
+	fmt.Printf("%62s %10d\n", "合計:", grandTotal)
 }
 
 func runHistory(args []string, styles ui.Styles) {
